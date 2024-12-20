@@ -28,7 +28,13 @@ namespace WEB_AUTH_API.DataAccess
                 options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
                 options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
             })
-            .AddJwtBearer(options =>
+                .AddJwtBearer("Keycloak", options =>
+                {
+                    options.Authority = "http://localhost:9090/realms/DTI";
+                    options.Audience = "web-security-backend";
+                    options.RequireHttpsMetadata = false; // Disable in development                      // Use HTTPS in production
+                })
+            .AddJwtBearer("CustomJWT", options =>
             {
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
@@ -40,6 +46,19 @@ namespace WEB_AUTH_API.DataAccess
                     ValidAudience = jwtSettings["Audience"],
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key))
                 };
+            });
+
+            services.AddAuthorization(options =>
+            {
+                options.AddPolicy("KeycloakPolicy", policy =>
+                    policy.RequireAuthenticatedUser().AddAuthenticationSchemes("Keycloak"));
+
+                options.AddPolicy("CustomJWTPolicy", policy =>
+                    policy.RequireAuthenticatedUser().AddAuthenticationSchemes("CustomJWT"));
+
+                options.AddPolicy("CombinedPolicy", policy =>
+                    policy.RequireAuthenticatedUser()
+                          .AddAuthenticationSchemes("Keycloak", "CustomJWT"));
             });
 
             services.AddAuthorization(options =>
