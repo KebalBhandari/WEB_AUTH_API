@@ -184,7 +184,6 @@ namespace WEB_AUTH_API.Controllers
             }
         }
 
-        [Authorize(Policy = "AdminPolicy")]
         [HttpPost("InvalidateSession")]
         public IActionResult InvalidateSession([FromBody] InvalidateSessionRequest request)
         {
