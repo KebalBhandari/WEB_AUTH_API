@@ -125,7 +125,6 @@ namespace WEB_AUTH_API.Controllers
                         refreshToken.Token = token.RefreshToken;
                         refreshToken.CreatedByUser = request.Email;
                         refreshToken.Expiration = DateTime.UtcNow.AddDays(int.Parse(jwtSettings["RefreshTokenExpiryInDay"]));
-
                         InsertRefreshToken(refreshToken);
 
                         return Ok(new
