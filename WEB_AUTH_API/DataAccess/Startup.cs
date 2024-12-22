@@ -30,7 +30,7 @@ namespace WEB_AUTH_API.DataAccess
             })
                 .AddJwtBearer("Keycloak", options =>
                 {
-                    options.Authority = "http://localhost:9090/realms/DTI";
+                    options.Authority = "http://localhost:8080/realms/DTI";
                     options.Audience = "web-security-backend";
                     options.RequireHttpsMetadata = false; // Disable in development                      // Use HTTPS in production
                 })

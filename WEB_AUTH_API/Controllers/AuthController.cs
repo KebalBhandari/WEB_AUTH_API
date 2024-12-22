@@ -85,6 +85,72 @@ namespace WEB_AUTH_API.Controllers
         }
 
 
+        [HttpPost("LoginOAuth")]
+        public async Task<IActionResult> LoginOAuth([FromBody] KeyCloakAuthModel request)
+        {
+            try
+            {
+                var parameters = new SqlParameter[]
+                {
+                    new SqlParameter("@UserEmail", request.Email),
+                    new SqlParameter("@Username", request.Username),
+                    new SqlParameter("@IP_Address", request.IpAddress),
+                    new SqlParameter("@UserIdd", request.UserId),
+                    new SqlParameter("@TokenNo", request.TokenNo),
+                    new SqlParameter("@User_Agent", request.UserAgent)
+                };
+
+                DataTable dt = await Task.Run(() => _dataHandler.ReadData("sp_ValidateLoginAndUpdateSessionOAuth", parameters, CommandType.StoredProcedure));
+
+                if (dt.Rows.Count > 0)
+                {
+                    if (dt.Rows[0]["RefreshToken"].ToString() == null || dt.Rows[0]["RefreshToken"].ToString() == "")
+                    {
+                        return BadRequest(new { Status = "ERROR", Message = "Login Failed, Try Again", jWTToken = "Null" });
+                    }
+                    else
+                    {
+                        var jwtSettings = _configuration.GetSection("Jwt");
+                        var token = JwtTokenHelper.GenerateJwtTokenWithRefresh(
+                            key: jwtSettings["Key"],
+                            issuer: jwtSettings["Issuer"],
+                            audience: jwtSettings["Audience"],
+                            expirationMinutes: int.Parse(jwtSettings["TokenExpiryInMinutes"]),
+                            subject: dt.Columns.Contains("RefreshToken") ? dt.Rows[0]["RefreshToken"].ToString() : null,
+                            roles: ["User"]
+                        );
+
+                        RefreshToken refreshToken = new RefreshToken();
+                        refreshToken.Username = dt.Columns.Contains("RefreshToken") ? dt.Rows[0]["RefreshToken"].ToString() : null;
+                        refreshToken.Token = token.RefreshToken;
+                        refreshToken.CreatedByUser = request.Email;
+                        refreshToken.Expiration = DateTime.UtcNow.AddDays(int.Parse(jwtSettings["RefreshTokenExpiryInDay"]));
+
+                        InsertRefreshToken(refreshToken);
+
+                        return Ok(new
+                        {
+                            Status = dt.Rows[0]["Status"].ToString(),
+                            Message = dt.Rows[0]["Message"].ToString(),
+                            RefreshToken = dt.Columns.Contains("RefreshToken") ? dt.Rows[0]["RefreshToken"].ToString() : null,
+                            JWTRefreshToken = token.RefreshToken,
+                            JWTToken = token.AccessToken
+                        });
+                    }
+                }
+                else
+                {
+
+                    return BadRequest(new { Status = "ERROR", Message = "No response from stored procedure", jWTToken = "Null" });
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Status = "ERROR", Message = ex.Message });
+            }
+        }
+
+
         [HttpPost("Register")]
         public IActionResult Register([FromBody] SignUpModel﻿ request)
         {
