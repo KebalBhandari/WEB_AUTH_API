@@ -28,12 +28,6 @@ namespace WEB_AUTH_API.DataAccess
                 options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
                 options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
             })
-                .AddJwtBearer("Keycloak", options =>
-                {
-                    options.Authority = "http://localhost:8080/realms/DTI";
-                    options.Audience = "web-security-backend";
-                    options.RequireHttpsMetadata = false; // Disable in development                      // Use HTTPS in production
-                })
             .AddJwtBearer("CustomJWT", options =>
             {
                 options.TokenValidationParameters = new TokenValidationParameters
@@ -100,9 +94,11 @@ namespace WEB_AUTH_API.DataAccess
                     }
                 });
             });
+            services.AddSingleton<DataHandeler>();
+            services.AddSingleton<ModelInitializer>();
         }
 
-        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+        public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ModelInitializer modelInitializer)
         {
             if (env.IsDevelopment())
             {
@@ -118,6 +114,7 @@ namespace WEB_AUTH_API.DataAccess
 
             app.UseAuthentication();
             app.UseAuthorization();
+            modelInitializer.InitializeModel();
 
             app.UseEndpoints(endpoints =>
             {
