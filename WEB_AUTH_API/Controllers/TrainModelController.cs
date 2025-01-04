@@ -144,15 +144,19 @@ namespace WEB_AUTH_API.Controllers
 
                 // Step 5: Calculate the anomaly score based on cluster distances
                 float minDistance = prediction.Distances.Min();
-                float threshold = 0.5f; // Set your threshold based on training observations
+                float maxPossibleDistance = 10000f; // Adjust based on your dataset and observations
+                float normalizedDistance = minDistance / maxPossibleDistance;
+                float confidence = 1 - (minDistance / maxPossibleDistance); // Normalize to range [0, 1]
+                confidence = Math.Max(0, Math.Min(confidence, 1));
+                float threshold = 0.5f;
 
-                bool isAnomaly = minDistance > threshold;
+                bool isAnomaly = normalizedDistance > threshold;
 
                 return Ok(new
                 {
                     Status = "SUCCESS",
                     IsAnomaly = isAnomaly,
-                    Confidence = 1 - minDistance // The closer the distance, the higher the confidence
+                    Confidence = confidence // The closer the distance, the higher the confidence
                 });
             }
             catch (Exception ex)
