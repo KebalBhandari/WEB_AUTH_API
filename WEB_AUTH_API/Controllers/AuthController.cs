@@ -1,5 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Newtonsoft.Json.Linq;
 using System.Data;
@@ -42,6 +41,17 @@ namespace WEB_AUTH_API.Controllers
                     {
                         return BadRequest(new { Status = "ERROR", Message = "Login Failed, Try Again", jWTToken = "Null" });
                     }
+                    else if (dt.Rows[0]["RefreshToken"].ToString() == "ERROR")
+                    {
+                        return Ok(new
+                        {
+                            Status = dt.Rows[0]["Status"].ToString(),
+                            Message = dt.Rows[0]["Message"].ToString(),
+                            RefreshToken = "ERROR",
+                            JWTRefreshToken = "",
+                            JWTToken = ""
+                        });
+                    }
                     else
                     {
                         var jwtSettings = _configuration.GetSection("Jwt");
@@ -68,7 +78,8 @@ namespace WEB_AUTH_API.Controllers
                             Message = dt.Rows[0]["Message"].ToString(),
                             RefreshToken = dt.Columns.Contains("RefreshToken") ? dt.Rows[0]["RefreshToken"].ToString() : null,
                             JWTRefreshToken = token.RefreshToken,
-                            JWTToken = token.AccessToken
+                            JWTToken = token.AccessToken,
+                            UserName = dt.Rows[0]["UserName"].ToString()
                         });
                     }
                 }
@@ -133,7 +144,8 @@ namespace WEB_AUTH_API.Controllers
                             Message = dt.Rows[0]["Message"].ToString(),
                             RefreshToken = dt.Columns.Contains("RefreshToken") ? dt.Rows[0]["RefreshToken"].ToString() : null,
                             JWTRefreshToken = token.RefreshToken,
-                            JWTToken = token.AccessToken
+                            JWTToken = token.AccessToken,
+                            UserName = dt.Rows[0]["UserName"].ToString()
                         });
                     }
                 }

@@ -1,7 +1,8 @@
-﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
+﻿using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 
 namespace WEB_AUTH_API.DataAccess
 {
@@ -62,7 +63,6 @@ namespace WEB_AUTH_API.DataAccess
             });
 
             services.AddControllers();
-            services.AddSwaggerGen();
             services.AddMvc();
             services.AddMvc().AddNewtonsoftJson();
 
@@ -96,6 +96,15 @@ namespace WEB_AUTH_API.DataAccess
             });
             services.AddSingleton<DataHandeler>();
             services.AddSingleton<ModelInitializer>();
+            services.AddCors(options =>
+            {
+                options.AddPolicy("AllowSpecificOrigin", builder =>
+                {
+                    builder.WithOrigins("https://auth.kebalbhandari.com.np")
+                           .AllowAnyMethod()
+                           .AllowAnyHeader();
+                });
+            });
         }
 
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ModelInitializer modelInitializer)
@@ -111,7 +120,7 @@ namespace WEB_AUTH_API.DataAccess
             });
 
             app.UseRouting();
-
+            app.UseCors("AllowSpecificOrigin");
             app.UseAuthentication();
             app.UseAuthorization();
             modelInitializer.InitializeModel();
