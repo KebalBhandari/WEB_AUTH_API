@@ -57,12 +57,14 @@ namespace WEB_AUTH_API.DataAccess
             string sqlQuery = "SELECT DISTINCT UserId FROM Timings";
             DataTable userIdsTable = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
 
+
             foreach (DataRow row in userIdsTable.Rows)
             {
                 int userId = Convert.ToInt32(row["UserId"]);
                 UserBehaviorDataModel userData = GetDataFromDb(userId);
-                UserFeatures features = ExtractFeatures(userData);
-                trainingData.Add(features);
+                var userFeaturesForAllAttempts = ExtractFeaturesPerAttempt(userData);
+
+                trainingData.AddRange(userFeaturesForAllAttempts);
             }
 
             // Train the model
@@ -79,7 +81,11 @@ namespace WEB_AUTH_API.DataAccess
                             .Append(context.Transforms.Conversion.MapValueToKey("Features"))
                             .Append(context.Transforms.Conversion.MapKeyToValue("Features"))
                             .Append(context.Transforms.ReplaceMissingValues("Features"))
-                            .Append(context.Clustering.Trainers.KMeans("Features", numberOfClusters: 1));
+                            .Append(context.Transforms.NormalizeMeanVariance("Features", "Features"))
+                            .Append(context.AnomalyDetection.Trainers.RandomizedPca(
+                                featureColumnName: "Features",
+                                rank: 4
+                            ));
 
 
             var model = pipeline.Fit(dataView);
@@ -211,6 +217,81 @@ namespace WEB_AUTH_API.DataAccess
                 ShapeTimings = shapeTimings,
                 ShapeMouseMovements = mouseMovements
             };
+        }
+
+        private List<UserFeatures> ExtractFeaturesPerAttempt(UserBehaviorDataModel data)
+        {
+            var allFeatures = new List<UserFeatures>();
+            int numberOfAttempts = new int[]
+            {
+                data.Timings.Count,
+                data.KeyHoldTimes.Count,
+                data.DotTimings.Count,
+                data.ShapeTimings.Count,
+                data.ShapeMouseMovements.Count
+            }.Min();
+
+            for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
+            {
+                var attemptFeatures = new UserFeatures();
+                var attemptTimings = data.Timings[attemptIndex];  // List<double>
+                attemptFeatures.AvgTimingInterval = (float)attemptTimings.Average();
+                attemptFeatures.StdDevTimingInterval = (float)Math.Sqrt(
+                    attemptTimings.Average(v => Math.Pow(v - attemptFeatures.AvgTimingInterval, 2))
+                );
+
+                var attemptKeyHolds = data.KeyHoldTimes[attemptIndex]; // List<KeyHoldTime>
+                var durations = attemptKeyHolds.Select(k => k.Duration).ToList();
+                attemptFeatures.AvgKeyHoldDuration = (float)durations.Average();
+                attemptFeatures.StdDevKeyHoldDuration = (float)Math.Sqrt(
+                    durations.Average(v => Math.Pow(v - attemptFeatures.AvgKeyHoldDuration, 2))
+                );
+
+                var attemptDotTimings = data.DotTimings[attemptIndex]; // List<double>
+                attemptFeatures.AvgDotReactionTime = (float)attemptDotTimings.Average();
+
+                var attemptShapeTimings = data.ShapeTimings[attemptIndex]; // List<ShapeTiming>
+                attemptFeatures.AvgShapeReactionTime = (float)attemptShapeTimings.Average(s => s.ReactionTime);
+                attemptFeatures.ShapeAccuracy = (float)attemptShapeTimings.Average(s => s.IsCorrect);
+
+                var attemptMouseMovements = data.ShapeMouseMovements[attemptIndex]; // List<MouseMovement>
+                if (attemptMouseMovements.Count > 1)
+                {
+                    double totalDistance = 0;
+                    double totalTime = 0;
+
+                    for (int i = 1; i < attemptMouseMovements.Count; i++)
+                    {
+                        var dx = attemptMouseMovements[i].X - attemptMouseMovements[i - 1].X;
+                        var dy = attemptMouseMovements[i].Y - attemptMouseMovements[i - 1].Y;
+                        var dt = attemptMouseMovements[i].Time - attemptMouseMovements[i - 1].Time;
+
+                        // Make sure dt > 0 to avoid division by zero
+                        if (dt > 0)
+                        {
+                            totalDistance += Math.Sqrt(dx * dx + dy * dy);
+                            totalTime += dt;
+                        }
+                    }
+
+                    if (totalTime > 0)
+                    {
+                        attemptFeatures.AvgMouseSpeed = (float)(totalDistance / totalTime);
+                    }
+                    else
+                    {
+                        attemptFeatures.AvgMouseSpeed = 0;
+                    }
+                }
+                else
+                {
+                    attemptFeatures.AvgMouseSpeed = 0;
+                }
+
+                allFeatures.Add(attemptFeatures);
+            }
+
+            return allFeatures;
         }
 
         public UserFeatures ExtractFeatures(UserBehaviorDataModel data)

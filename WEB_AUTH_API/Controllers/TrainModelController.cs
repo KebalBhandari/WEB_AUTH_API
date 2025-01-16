@@ -1,17 +1,9 @@
-﻿using Azure.Core;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.HttpResults;
+﻿
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Configuration;
-using Newtonsoft.Json.Linq;
-using Newtonsoft.Json;
 using System.Data;
-using System.Data.Common;
-using System.Transactions;
 using WEB_AUTH_API.DataAccess;
 using WEB_AUTH_API.Models;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 using Microsoft.ML;
 
 namespace WEB_AUTH_API.Controllers
@@ -31,91 +23,123 @@ namespace WEB_AUTH_API.Controllers
         }
 
         [HttpPost("SaveData")]
-        public IActionResult SaveData([FromBody] UserDataModel userDataModel)
+        public async Task<IActionResult> SaveData([FromBody] UserDataModel userDataModel)
         {
             try
             {
-                foreach (var (timingList, attemptNumber) in userDataModel.Timings.Select((value, index) => (value, index + 1)))
-                {
-                    foreach (var interval in timingList)
-                    {
-                        var parameters_for_timings = new SqlParameter[]
-                        {
-                            new SqlParameter("@UserId", userDataModel.TokenNo),
-                            new SqlParameter("@AttemptNumber", attemptNumber),
-                            new SqlParameter("@IntervalValue", interval)
-                        };
-                        int result = _dataHandler.Insert("InsertTimings", parameters_for_timings, CommandType.StoredProcedure);
-                        if (result <= 0) throw new Exception("Failed to insert timing data.");
-                    }
-                }
+                var tasks = new List<Task>();
 
-                // Insert Key Hold Times
-                foreach (var (keyHoldList, attemptNumber) in userDataModel.KeyHoldTimes.Select((value, index) => (value, index + 1)))
+                // 1) Insert Timings in a separate task
+                tasks.Add(Task.Run(() =>
                 {
-                    foreach (var keyHold in keyHoldList)
+                    foreach (var (timingList, attemptNumber) in userDataModel.Timings.Select((value, idx) => (value, idx + 1)))
                     {
-                        var parameters_for_keyHoldTimes = new SqlParameter[]
+                        foreach (var interval in timingList)
                         {
-                                new SqlParameter("@UserId", userDataModel.TokenNo),
-                                new SqlParameter("@AttemptNumber", attemptNumber),
-                                new SqlParameter("@Duration", keyHold.Duration)
-                        };
-                        int result = _dataHandler.Insert("InsertKeyHoldTimes", parameters_for_keyHoldTimes, CommandType.StoredProcedure);
-                        if (result <= 0) throw new Exception("Failed to insert key hold time data.");
-                    }
-                }
+                            var parameters = new SqlParameter[]
+                            {
+                        new SqlParameter("@UserId", userDataModel.TokenNo),
+                        new SqlParameter("@AttemptNumber", attemptNumber),
+                        new SqlParameter("@IntervalValue", interval)
+                            };
 
-                // Insert Dot Timings
-                foreach (var (dotTimingList, attemptNumber) in userDataModel.DotTimings.Select((value, index) => (value, index + 1)))
-                {
-                    foreach (var reactionTime in dotTimingList)
-                    {
-                        var parameters_for_dotTimings = new SqlParameter[]
-                        {
-                                new SqlParameter("@UserId", userDataModel.TokenNo),
-                                new SqlParameter("@AttemptNumber", attemptNumber),
-                                new SqlParameter("@ReactionTime", reactionTime)
-                        };
-                        int result = _dataHandler.Insert("InsertDotTimings", parameters_for_dotTimings, CommandType.StoredProcedure);
-                        if (result <= 0) throw new Exception("Failed to insert dot timing data.");
+                            int result = _dataHandler.Insert("InsertTimings", parameters, CommandType.StoredProcedure);
+                            if (result <= 0)
+                                throw new Exception("Failed to insert timing data.");
+                        }
                     }
-                }
+                }));
 
-                // Insert Shape Timings
-                foreach (var (shapeTimingList, attemptNumber) in userDataModel.ShapeTimings.Select((value, index) => (value, index + 1)))
+                // 2) Insert KeyHoldTimes in another task
+                tasks.Add(Task.Run(() =>
                 {
-                    foreach (var shapeTiming in shapeTimingList)
+                    foreach (var (keyHoldList, attemptNumber) in userDataModel.KeyHoldTimes.Select((value, idx) => (value, idx + 1)))
                     {
-                        var parameters_for_shapeTimings = new SqlParameter[]
+                        foreach (var keyHold in keyHoldList)
                         {
-                                new SqlParameter("@UserId", userDataModel.TokenNo),
-                                new SqlParameter("@AttemptNumber", attemptNumber),
-                                new SqlParameter("@ReactionTime", shapeTiming.ReactionTime),
-                                new SqlParameter("@IsCorrect", shapeTiming.IsCorrect)
-                        };
-                        int result = _dataHandler.Insert("InsertShapeTimings", parameters_for_shapeTimings, CommandType.StoredProcedure);
-                        if (result <= 0) throw new Exception("Failed to insert shape timing data.");
-                    }
-                }
+                            var parameters = new SqlParameter[]
+                            {
+                        new SqlParameter("@UserId", userDataModel.TokenNo),
+                        new SqlParameter("@AttemptNumber", attemptNumber),
+                        new SqlParameter("@Duration", keyHold.Duration)
+                            };
 
-                // Insert Mouse Movements
-                foreach (var (mouseMovementList, attemptNumber) in userDataModel.ShapeMouseMovements.Select((value, index) => (value, index + 1)))
-                {
-                    foreach (var mouseMovement in mouseMovementList)
-                    {
-                        var parameters_for_mouseMovements = new SqlParameter[]
-                        {
-                                new SqlParameter("@UserId", userDataModel.TokenNo),
-                                new SqlParameter("@AttemptNumber", attemptNumber),
-                                new SqlParameter("@Time", mouseMovement.Time),
-                                new SqlParameter("@X", mouseMovement.X),
-                                new SqlParameter("@Y", mouseMovement.Y)
-                        };
-                        int result = _dataHandler.Insert("InsertMouseMovements", parameters_for_mouseMovements, CommandType.StoredProcedure);
-                        if (result <= 0) throw new Exception("Failed to insert mouse movement data.");
+                            int result = _dataHandler.Insert("InsertKeyHoldTimes", parameters, CommandType.StoredProcedure);
+                            if (result <= 0)
+                                throw new Exception("Failed to insert key hold time data.");
+                        }
                     }
-                }
+                }));
+
+                // 3) Insert DotTimings
+                tasks.Add(Task.Run(() =>
+                {
+                    foreach (var (dotTimingList, attemptNumber) in userDataModel.DotTimings.Select((value, idx) => (value, idx + 1)))
+                    {
+                        foreach (var reactionTime in dotTimingList)
+                        {
+                            var parameters = new SqlParameter[]
+                            {
+                        new SqlParameter("@UserId", userDataModel.TokenNo),
+                        new SqlParameter("@AttemptNumber", attemptNumber),
+                        new SqlParameter("@ReactionTime", reactionTime)
+                            };
+
+                            int result = _dataHandler.Insert("InsertDotTimings", parameters, CommandType.StoredProcedure);
+                            if (result <= 0)
+                                throw new Exception("Failed to insert dot timing data.");
+                        }
+                    }
+                }));
+
+                // 4) Insert ShapeTimings
+                tasks.Add(Task.Run(() =>
+                {
+                    foreach (var (shapeTimingList, attemptNumber) in userDataModel.ShapeTimings.Select((value, idx) => (value, idx + 1)))
+                    {
+                        foreach (var shapeTiming in shapeTimingList)
+                        {
+                            var parameters = new SqlParameter[]
+                            {
+                        new SqlParameter("@UserId", userDataModel.TokenNo),
+                        new SqlParameter("@AttemptNumber", attemptNumber),
+                        new SqlParameter("@ReactionTime", shapeTiming.ReactionTime),
+                        new SqlParameter("@IsCorrect", shapeTiming.IsCorrect)
+                            };
+
+                            int result = _dataHandler.Insert("InsertShapeTimings", parameters, CommandType.StoredProcedure);
+                            if (result <= 0)
+                                throw new Exception("Failed to insert shape timing data.");
+                        }
+                    }
+                }));
+
+                // 5) Insert MouseMovements
+                tasks.Add(Task.Run(() =>
+                {
+                    foreach (var (mouseMovementList, attemptNumber) in userDataModel.ShapeMouseMovements.Select((value, idx) => (value, idx + 1)))
+                    {
+                        foreach (var mouseMovement in mouseMovementList)
+                        {
+                            var parameters = new SqlParameter[]
+                            {
+                        new SqlParameter("@UserId", userDataModel.TokenNo),
+                        new SqlParameter("@AttemptNumber", attemptNumber),
+                        new SqlParameter("@Time", mouseMovement.Time),
+                        new SqlParameter("@X", mouseMovement.X),
+                        new SqlParameter("@Y", mouseMovement.Y)
+                            };
+
+                            int result = _dataHandler.Insert("InsertMouseMovements", parameters, CommandType.StoredProcedure);
+                            if (result <= 0)
+                                throw new Exception("Failed to insert mouse movement data.");
+                        }
+                    }
+                }));
+
+                // Wait for all insert tasks to complete
+                await Task.WhenAll(tasks);
+
                 return StatusCode(200, new { Status = "SUCCESS", Message ="Data Saved Successfully" });
             }
             catch (Exception ex)
@@ -137,25 +161,25 @@ namespace WEB_AUTH_API.Controllers
                 ITransformer model = context.Model.Load("behavior_model.zip", out var schema);
 
                 // Step 3: Create a prediction engine
-                var predictionEngine = context.Model.CreatePredictionEngine<UserFeatures, ClusteringPrediction>(model);
+                var predictionEngine = context.Model.CreatePredictionEngine<UserFeatures, PcaAnomalyPrediction>(model, inputSchema: schema);
 
                 // Step 4: Predict the result
                 var prediction = predictionEngine.Predict(extractedFeatures);
 
                 // Step 5: Calculate the anomaly score based on cluster distances
-                float minDistance = prediction.Distances.Min();
-                float maxPossibleDistance = 10000f; // Adjust based on your dataset and observations
-                float normalizedDistance = minDistance / maxPossibleDistance;
-                float confidence = 1 - (minDistance / maxPossibleDistance); // Normalize to range [0, 1]
-                confidence = Math.Max(0, Math.Min(confidence, 1));
-                float threshold = 0.5f;
+                bool isAnomaly = prediction.IsAnomaly;
+                float score = prediction.Score;    // Distance-like measure
 
-                bool isAnomaly = normalizedDistance > threshold;
+                float maxPossibleScore = 10f;   // Adjust based on observation
+                float rawConfidence = 1f - (score / maxPossibleScore);
+                // Clamp to [0,1]
+                float confidence = Math.Clamp(rawConfidence, 0f, 1f);
 
                 return Ok(new
                 {
                     Status = "SUCCESS",
                     IsAnomaly = isAnomaly,
+                    Score = score,
                     Confidence = confidence // The closer the distance, the higher the confidence
                 });
             }
@@ -182,11 +206,6 @@ namespace WEB_AUTH_API.Controllers
             // 3. Dot Timing Features
             var allDotTimings = data.DotTimings.SelectMany(d => d).ToList();
             features.AvgDotReactionTime = (float)allDotTimings.Average();
-
-            // 4. Shape Timing Features
-            var allShapeTimings = data.ShapeTimings.SelectMany(s => s).ToList();
-            features.AvgShapeReactionTime = (float)allShapeTimings.Average(s => s.ReactionTime);
-            features.ShapeAccuracy = (float)allShapeTimings.Average(s => s.IsCorrect);
 
             // 5. Mouse Movement Features
             var allMouseMovements = data.ShapeMouseMovements.SelectMany(m => m).ToList();
