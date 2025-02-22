@@ -10,6 +10,8 @@
         public float AvgShapeReactionTime { get; set; }
         public float ShapeAccuracy { get; set; }
         public float AvgMouseSpeed { get; set; }
+        public float BackspacePressCount { get; set; }
+        public float AvgBackspaceInterval { get; set; }
 
         // Constructor to initialize from a double array
         public UserFeatures(double[] featureArray)
@@ -25,9 +27,10 @@
             AvgShapeReactionTime = (float)featureArray[5];
             ShapeAccuracy = (float)featureArray[6];
             AvgMouseSpeed = (float)featureArray[7];
+            BackspacePressCount = (float)featureArray[8]; 
+            AvgBackspaceInterval = (float)featureArray[9];
         }
 
-        // Method to convert UserFeatures to a double array
         public double[] ToArray()
         {
             return new double[]
@@ -39,7 +42,9 @@
             AvgDotReactionTime,
             AvgShapeReactionTime,
             ShapeAccuracy,
-            AvgMouseSpeed
+            AvgMouseSpeed,
+            BackspacePressCount,
+            AvgBackspaceInterval,
             };
         }
 

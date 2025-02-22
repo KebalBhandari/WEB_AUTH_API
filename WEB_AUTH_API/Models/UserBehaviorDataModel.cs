@@ -13,6 +13,9 @@
         public List<List<ShapeTiming>> ShapeTimings { get; set; } = new List<List<ShapeTiming>>();
 
         public List<List<MouseMovement>> ShapeMouseMovements { get; set; } = new List<List<MouseMovement>>();
+
+        public List<List<BackspaceTiming>> BackspaceTimings { get; set; } = new List<List<BackspaceTiming>>();
+
     }
 
     public class KeyHoldTime

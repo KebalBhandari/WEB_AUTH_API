@@ -19,14 +19,12 @@ namespace WEB_AUTH_API.DataAccess
         {
             var context = new MLContext();
 
-            // Step 1: Check if the model already exists
             if (File.Exists(_modelPath))
             {
                 Console.WriteLine("Trained model found. Skipping model training...");
                 return;
             }
 
-            // Step 2: Check if data is present in the database
             if (IsDataAvailable())
             {
                 Console.WriteLine("Data found in the database. Training model using database data...");
@@ -41,7 +39,6 @@ namespace WEB_AUTH_API.DataAccess
 
         private bool IsDataAvailable()
         {
-            // Query to check if any data is present in the database
             string sqlQuery = "SELECT COUNT(*) AS DataCount FROM Timings";
             DataTable result = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
             int dataCount = Convert.ToInt32(result.Rows[0]["DataCount"]);
@@ -53,11 +50,11 @@ namespace WEB_AUTH_API.DataAccess
         {
             var trainingData = new List<UserFeatures>();
 
-            // Fetch user IDs for training
+            // Fetch all unique user IDs from the database
             string sqlQuery = "SELECT DISTINCT UserId FROM Timings";
             DataTable userIdsTable = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
 
-
+            // Iterate through each user and extract features
             foreach (DataRow row in userIdsTable.Rows)
             {
                 int userId = Convert.ToInt32(row["UserId"]);
@@ -67,8 +64,10 @@ namespace WEB_AUTH_API.DataAccess
                 trainingData.AddRange(userFeaturesForAllAttempts);
             }
 
-            // Train the model
+            // Load training data into ML.NET data view
             var dataView = context.Data.LoadFromEnumerable(trainingData);
+
+            // Define the ML pipeline
             var pipeline = context.Transforms.Concatenate("Features",
                                                           nameof(UserFeatures.AvgTimingInterval),
                                                           nameof(UserFeatures.StdDevTimingInterval),
@@ -77,7 +76,9 @@ namespace WEB_AUTH_API.DataAccess
                                                           nameof(UserFeatures.AvgDotReactionTime),
                                                           nameof(UserFeatures.AvgShapeReactionTime),
                                                           nameof(UserFeatures.ShapeAccuracy),
-                                                          nameof(UserFeatures.AvgMouseSpeed))
+                                                          nameof(UserFeatures.AvgMouseSpeed),
+                                                          nameof(UserFeatures.BackspacePressCount), // New feature
+                                                          nameof(UserFeatures.AvgBackspaceInterval)) // New feature
                             .Append(context.Transforms.Conversion.MapValueToKey("Features"))
                             .Append(context.Transforms.Conversion.MapKeyToValue("Features"))
                             .Append(context.Transforms.ReplaceMissingValues("Features"))
@@ -87,7 +88,7 @@ namespace WEB_AUTH_API.DataAccess
                                 rank: 4
                             ));
 
-
+            // Train the model
             var model = pipeline.Fit(dataView);
 
             // Save the trained model
@@ -99,23 +100,28 @@ namespace WEB_AUTH_API.DataAccess
 
         private void CreateBaselineModel(MLContext context)
         {
-            // Placeholder data
+            // Create placeholder data for the baseline model
             var placeholderData = new List<UserFeatures>
+    {
+        new UserFeatures
         {
-            new UserFeatures
-            {
-                AvgTimingInterval = 0.1f,
-                StdDevTimingInterval = 0.05f,
-                AvgKeyHoldDuration = 0.2f,
-                StdDevKeyHoldDuration = 0.1f,
-                AvgDotReactionTime = 0.3f,
-                AvgShapeReactionTime = 0.4f,
-                ShapeAccuracy = 0.9f,
-                AvgMouseSpeed = 0.5f
-            }
-        };
+            AvgTimingInterval = 0.1f,
+            StdDevTimingInterval = 0.05f,
+            AvgKeyHoldDuration = 0.2f,
+            StdDevKeyHoldDuration = 0.1f,
+            AvgDotReactionTime = 0.3f,
+            AvgShapeReactionTime = 0.4f,
+            ShapeAccuracy = 0.9f,
+            AvgMouseSpeed = 0.5f,
+            BackspacePressCount = 2, // New feature
+            AvgBackspaceInterval = 100.0f // New feature
+        }
+    };
 
+            // Load placeholder data into ML.NET data view
             var dataView = context.Data.LoadFromEnumerable(placeholderData);
+
+            // Define the ML pipeline
             var pipeline = context.Transforms.Concatenate("Features",
                                                           nameof(UserFeatures.AvgTimingInterval),
                                                           nameof(UserFeatures.StdDevTimingInterval),
@@ -124,11 +130,15 @@ namespace WEB_AUTH_API.DataAccess
                                                           nameof(UserFeatures.AvgDotReactionTime),
                                                           nameof(UserFeatures.AvgShapeReactionTime),
                                                           nameof(UserFeatures.ShapeAccuracy),
-                                                          nameof(UserFeatures.AvgMouseSpeed))
+                                                          nameof(UserFeatures.AvgMouseSpeed),
+                                                          nameof(UserFeatures.BackspacePressCount), // New feature
+                                                          nameof(UserFeatures.AvgBackspaceInterval)) // New feature
                            .Append(context.AnomalyDetection.Trainers.RandomizedPca("Features", rank: 4));
 
+            // Train the baseline model
             var model = pipeline.Fit(dataView);
 
+            // Save the baseline model
             context.Model.Save(model, dataView.Schema, _modelPath);
 
             Console.WriteLine("Baseline model created and saved successfully.");
@@ -147,7 +157,6 @@ namespace WEB_AUTH_API.DataAccess
                                     .Select(g => g.Select(row => row.Field<double>("IntervalValue")).ToList())
                                     .ToList();
 
-            // 2. Fetch Key Hold Times
             var parametersForKeyHoldTimes = new SqlParameter[]
             {
                 new SqlParameter("@UserId", userId)
@@ -162,7 +171,6 @@ namespace WEB_AUTH_API.DataAccess
                                           }).ToList())
                                           .ToList();
 
-            // 3. Fetch Dot Timings
             var parametersForDotTimings = new SqlParameter[]
             {
                 new SqlParameter("@UserId", userId)
@@ -174,7 +182,6 @@ namespace WEB_AUTH_API.DataAccess
                                           .Select(g => g.Select(row => row.Field<double>("ReactionTime")).ToList())
                                           .ToList();
 
-            // 4. Fetch Shape Timings
             var parametersForShapeTimings = new SqlParameter[]
             {
                 new SqlParameter("@UserId", userId)
@@ -190,7 +197,6 @@ namespace WEB_AUTH_API.DataAccess
                                               }).ToList())
                                               .ToList();
 
-            // 5. Fetch Mouse Movements
             var parametersForMouseMovements = new SqlParameter[]
             {
                 new SqlParameter("@UserId", userId)
@@ -207,7 +213,21 @@ namespace WEB_AUTH_API.DataAccess
                                                   }).ToList())
                                                   .ToList();
 
-            // Construct UserBehaviorDataModel
+            var parametersForBackspaceTimings = new SqlParameter[]
+            {
+        new SqlParameter("@UserId", userId)
+            };
+            DataTable backspaceTimingData = _dataHandler.ReadData("GetBackspaceTimings", parametersForBackspaceTimings, CommandType.StoredProcedure);
+
+            var backspaceTimings = backspaceTimingData.AsEnumerable()
+                                                      .GroupBy(row => row.Field<int>("AttemptNumber"))
+                                                      .Select(g => g.Select(row => new BackspaceTiming
+                                                      {
+                                                          Time = row.Field<double>("Time"),
+                                                          Action = row.Field<string>("Action")
+                                                      }).ToList())
+                                                      .ToList();
+
             return new UserBehaviorDataModel
             {
                 UserId = userId,
@@ -215,7 +235,8 @@ namespace WEB_AUTH_API.DataAccess
                 KeyHoldTimes = keyHoldTimes,
                 DotTimings = dotTimings,
                 ShapeTimings = shapeTimings,
-                ShapeMouseMovements = mouseMovements
+                ShapeMouseMovements = mouseMovements,
+                BackspaceTimings = backspaceTimings
             };
         }
 
@@ -228,7 +249,8 @@ namespace WEB_AUTH_API.DataAccess
                 data.KeyHoldTimes.Count,
                 data.DotTimings.Count,
                 data.ShapeTimings.Count,
-                data.ShapeMouseMovements.Count
+                data.ShapeMouseMovements.Count,
+                data.BackspaceTimings.Count
             }.Min();
 
             for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
@@ -288,6 +310,40 @@ namespace WEB_AUTH_API.DataAccess
                     attemptFeatures.AvgMouseSpeed = 0;
                 }
 
+
+                // 6) Extract BackspaceTiming Features
+                var attemptBackspaceTimings = data.BackspaceTimings[attemptIndex]; // List<BackspaceTiming>
+                if (attemptBackspaceTimings.Count > 0)
+                {
+                    // Calculate the number of backspace presses
+                    attemptFeatures.BackspacePressCount = attemptBackspaceTimings.Count(b => b.Action == "pressed");
+
+                    // Calculate the average time between backspace presses
+                    var backspacePressTimes = attemptBackspaceTimings
+                        .Where(b => b.Action == "pressed")
+                        .Select(b => b.Time)
+                        .ToList();
+
+                    if (backspacePressTimes.Count > 1)
+                    {
+                        double totalInterval = 0;
+                        for (int i = 1; i < backspacePressTimes.Count; i++)
+                        {
+                            totalInterval += backspacePressTimes[i] - backspacePressTimes[i - 1];
+                        }
+                        attemptFeatures.AvgBackspaceInterval = (float)(totalInterval / (backspacePressTimes.Count - 1));
+                    }
+                    else
+                    {
+                        attemptFeatures.AvgBackspaceInterval = 0;
+                    }
+                }
+                else
+                {
+                    attemptFeatures.BackspacePressCount = 0;
+                    attemptFeatures.AvgBackspaceInterval = 0;
+                }
+
                 allFeatures.Add(attemptFeatures);
             }
 
@@ -330,15 +386,59 @@ namespace WEB_AUTH_API.DataAccess
                     var dy = allMouseMovements[i].Y - allMouseMovements[i - 1].Y;
                     var dt = allMouseMovements[i].Time - allMouseMovements[i - 1].Time;
 
-                    totalDistance += Math.Sqrt(dx * dx + dy * dy);
-                    totalTime += dt;
+                    // Make sure dt > 0 to avoid division by zero
+                    if (dt > 0)
+                    {
+                        totalDistance += Math.Sqrt(dx * dx + dy * dy);
+                        totalTime += dt;
+                    }
                 }
 
-                features.AvgMouseSpeed = (float)(totalDistance / totalTime);
+                if (totalTime > 0)
+                {
+                    features.AvgMouseSpeed = (float)(totalDistance / totalTime);
+                }
+                else
+                {
+                    features.AvgMouseSpeed = 0;
+                }
             }
             else
             {
                 features.AvgMouseSpeed = 0;
+            }
+
+            // 6. Backspace Timing Features
+            var allBackspaceTimings = data.BackspaceTimings.SelectMany(b => b).ToList();
+            if (allBackspaceTimings.Count > 0)
+            {
+                // Calculate the number of backspace presses
+                features.BackspacePressCount = allBackspaceTimings.Count(b => b.Action == "pressed");
+
+                // Calculate the average time between backspace presses
+                var backspacePressTimes = allBackspaceTimings
+                    .Where(b => b.Action == "pressed")
+                    .Select(b => b.Time)
+                    .ToList();
+
+                if (backspacePressTimes.Count > 1)
+                {
+                    double totalInterval = 0;
+                    for (int i = 1; i < backspacePressTimes.Count; i++)
+                    {
+                        totalInterval += backspacePressTimes[i] - backspacePressTimes[i - 1];
+                    }
+                    features.AvgBackspaceInterval = (float)(totalInterval / (backspacePressTimes.Count - 1));
+                }
+                else
+                {
+                    features.AvgBackspaceInterval = 0;
+                }
+            }
+            else
+            {
+                features.BackspacePressCount = 0;
+                features.AvgBackspaceInterval = 0;
             }
 
             return features;

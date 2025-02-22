@@ -137,10 +137,32 @@ namespace WEB_AUTH_API.Controllers
                     }
                 }));
 
+                // 6) Insert BackspaceTimings
+                tasks.Add(Task.Run(() =>
+                {
+                    foreach (var (backspaceTimingList, attemptNumber) in userDataModel.BackspaceTimings.Select((value, idx) => (value, idx + 1)))
+                    {
+                        foreach (var backspaceTiming in backspaceTimingList)
+                        {
+                            var parameters = new SqlParameter[]
+                            {
+                        new SqlParameter("@UserId", userDataModel.TokenNo),
+                        new SqlParameter("@AttemptNumber", attemptNumber),
+                        new SqlParameter("@Time", backspaceTiming.Time),
+                        new SqlParameter("@Action", backspaceTiming.Action)
+                            };
+
+                            int result = _dataHandler.Insert("InsertBackspaceTimings", parameters, CommandType.StoredProcedure);
+                            if (result <= 0)
+                                throw new Exception("Failed to insert backspace timing data.");
+                        }
+                    }
+                }));
+
                 // Wait for all insert tasks to complete
                 await Task.WhenAll(tasks);
 
-                return StatusCode(200, new { Status = "SUCCESS", Message ="Data Saved Successfully" });
+                return StatusCode(200, new { Status = "SUCCESS", Message = "Data Saved Successfully" });
             }
             catch (Exception ex)
             {
@@ -153,26 +175,20 @@ namespace WEB_AUTH_API.Controllers
         {
             try
             {
-                // Step 1: Extract features from the received data
                 UserFeatures extractedFeatures = ExtractFeatures(userData);
 
-                // Step 2: Load the trained model
                 var context = new MLContext();
                 ITransformer model = context.Model.Load("behavior_model.zip", out var schema);
 
-                // Step 3: Create a prediction engine
                 var predictionEngine = context.Model.CreatePredictionEngine<UserFeatures, PcaAnomalyPrediction>(model, inputSchema: schema);
 
-                // Step 4: Predict the result
                 var prediction = predictionEngine.Predict(extractedFeatures);
 
-                // Step 5: Calculate the anomaly score based on cluster distances
                 bool isAnomaly = prediction.IsAnomaly;
-                float score = prediction.Score;    // Distance-like measure
+                float score = prediction.Score;    
 
-                float maxPossibleScore = 10f;   // Adjust based on observation
+                float maxPossibleScore = 10f;   
                 float rawConfidence = 1f - (score / maxPossibleScore);
-                // Clamp to [0,1]
                 float confidence = Math.Clamp(rawConfidence, 0f, 1f);
 
                 return Ok(new
@@ -180,7 +196,7 @@ namespace WEB_AUTH_API.Controllers
                     Status = "SUCCESS",
                     IsAnomaly = isAnomaly,
                     Score = score,
-                    Confidence = confidence // The closer the distance, the higher the confidence
+                    Confidence = confidence 
                 });
             }
             catch (Exception ex)
