@@ -9,10 +9,12 @@ namespace WEB_AUTH_API.DataAccess
     {
         private readonly DataHandeler _dataHandler;
         private readonly string _modelPath = "behavior_model.zip";
+        private readonly ILogger<ModelInitializer> _logger;
 
-        public ModelInitializer(DataHandeler dataHandler)
+        public ModelInitializer(DataHandeler dataHandler, ILogger<ModelInitializer> logger)
         {
             _dataHandler = dataHandler;
+            _logger = logger;
         }
 
         public void InitializeModel()
@@ -21,452 +23,475 @@ namespace WEB_AUTH_API.DataAccess
 
             if (File.Exists(_modelPath))
             {
-                Console.WriteLine("Trained model found. Skipping model training...");
+                _logger.LogInformation("Trained model found. Skipping model training...");
                 return;
             }
 
             if (IsDataAvailable())
             {
-                Console.WriteLine("Data found in the database. Training model using database data...");
+                _logger.LogInformation("Data found in the database. Training model using database data...");
                 TrainModelUsingDatabase(context);
             }
             else
             {
-                Console.WriteLine("No data found in the database. Creating baseline model...");
+                _logger.LogInformation("No data found in the database. Creating baseline model...");
                 CreateBaselineModel(context);
             }
         }
 
         private bool IsDataAvailable()
         {
-            string sqlQuery = "SELECT COUNT(*) AS DataCount FROM Timings";
-            DataTable result = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
-            int dataCount = Convert.ToInt32(result.Rows[0]["DataCount"]);
-
-            return dataCount > 0;
+            try
+            {
+                string sqlQuery = "SELECT COUNT(*) AS DataCount FROM Timings";
+                DataTable result = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
+                int dataCount = Convert.ToInt32(result.Rows[0]["DataCount"]);
+                return dataCount > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error checking data availability: {ex.Message}");
+                return false;
+            }
         }
 
         private void TrainModelUsingDatabase(MLContext context)
         {
-            var trainingData = new List<UserFeatures>();
-
-            // Fetch all unique user IDs from the database
-            string sqlQuery = "SELECT DISTINCT UserId FROM Timings";
-            DataTable userIdsTable = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
-
-            // Iterate through each user and extract features
-            foreach (DataRow row in userIdsTable.Rows)
+            try
             {
-                int userId = Convert.ToInt32(row["UserId"]);
-                UserBehaviorDataModel userData = GetDataFromDb(userId);
-                var userFeaturesForAllAttempts = ExtractFeaturesPerAttempt(userData);
+                var trainingData = new List<UserFeatures>();
+                string sqlQuery = "SELECT DISTINCT UserId FROM Timings";
+                DataTable userIdsTable = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
 
-                trainingData.AddRange(userFeaturesForAllAttempts);
+                foreach (DataRow row in userIdsTable.Rows)
+                {
+                    int userId = Convert.ToInt32(row["UserId"]);
+                    var userRawData = GetRawDataFromDb(userId);
+                    trainingData.AddRange(userRawData);
+                }
+
+                if (!trainingData.Any())
+                {
+                    _logger.LogWarning("No training data found.");
+                    return;
+                }
+
+                // Filter invalid data
+                trainingData = trainingData.Where(f =>
+                    !float.IsNaN(f.TimingInterval) && !float.IsInfinity(f.TimingInterval) &&
+                    !float.IsNaN(f.KeyHoldDuration) && !float.IsInfinity(f.KeyHoldDuration) &&
+                    !float.IsNaN(f.DotReactionTime) && !float.IsInfinity(f.DotReactionTime) &&
+                    !float.IsNaN(f.ShapeReactionTime) && !float.IsInfinity(f.ShapeReactionTime) &&
+                    !float.IsNaN(f.ShapeAccuracy) && !float.IsInfinity(f.ShapeAccuracy) &&
+                    !float.IsNaN(f.MouseVelocity) && !float.IsInfinity(f.MouseVelocity) &&
+                    !float.IsNaN(f.BackspacePress) && !float.IsInfinity(f.BackspacePress) &&
+                    !float.IsNaN(f.BackspaceInterval) && !float.IsInfinity(f.BackspaceInterval)
+                ).ToList();
+
+                if (!trainingData.Any())
+                {
+                    _logger.LogWarning("No valid training data after filtering NaN/Infinity values.");
+                    return;
+                }
+
+                _logger.LogInformation($"Training with {trainingData.Count} data points.");
+                var dataView = context.Data.LoadFromEnumerable(trainingData);
+
+                var pipeline = context.Transforms.Concatenate("Features",
+                        nameof(UserFeatures.TimingInterval),
+                        nameof(UserFeatures.KeyHoldDuration),
+                        nameof(UserFeatures.DotReactionTime),
+                        nameof(UserFeatures.ShapeReactionTime),
+                        nameof(UserFeatures.ShapeAccuracy),
+                        nameof(UserFeatures.MouseVelocity),
+                        nameof(UserFeatures.BackspacePress),
+                        nameof(UserFeatures.BackspaceInterval))
+                    .Append(context.Transforms.ReplaceMissingValues("Features"))
+                    .Append(context.Transforms.NormalizeMeanVariance("Features"))
+                    .Append(context.AnomalyDetection.Trainers.RandomizedPca(
+                        featureColumnName: "Features",
+                        rank: 4 // Adjust if needed
+                    ));
+
+                var model = pipeline.Fit(dataView);
+                context.Model.Save(model, dataView.Schema, _modelPath);
+                _logger.LogInformation("Model trained and saved successfully.");
+
+                EvaluateModel(context, dataView, model);
             }
-
-            // Load training data into ML.NET data view
-            var dataView = context.Data.LoadFromEnumerable(trainingData);
-
-            // Define the ML pipeline
-            var pipeline = context.Transforms.Concatenate("Features",
-                                                          nameof(UserFeatures.AvgTimingInterval),
-                                                          nameof(UserFeatures.StdDevTimingInterval),
-                                                          nameof(UserFeatures.AvgKeyHoldDuration),
-                                                          nameof(UserFeatures.StdDevKeyHoldDuration),
-                                                          nameof(UserFeatures.AvgDotReactionTime),
-                                                          nameof(UserFeatures.AvgShapeReactionTime),
-                                                          nameof(UserFeatures.ShapeAccuracy),
-                                                          nameof(UserFeatures.AvgMouseSpeed),
-                                                          nameof(UserFeatures.BackspacePressCount), // New feature
-                                                          nameof(UserFeatures.AvgBackspaceInterval)) // New feature
-                            .Append(context.Transforms.Conversion.MapValueToKey("Features"))
-                            .Append(context.Transforms.Conversion.MapKeyToValue("Features"))
-                            .Append(context.Transforms.ReplaceMissingValues("Features"))
-                            .Append(context.Transforms.NormalizeMeanVariance("Features", "Features"))
-                            .Append(context.AnomalyDetection.Trainers.RandomizedPca(
-                                featureColumnName: "Features",
-                                rank: 4
-                            ));
-
-            // Train the model
-            var model = pipeline.Fit(dataView);
-
-            // Save the trained model
-            context.Model.Save(model, dataView.Schema, _modelPath);
-
-            Console.WriteLine("Model trained and saved successfully.");
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error during model training: {ex.Message}");
+                throw;
+            }
         }
 
+        private void EvaluateModel(MLContext context, IDataView testData, ITransformer model)
+        {
+            try
+            {
+                var predictions = model.Transform(testData);
+                var metrics = context.AnomalyDetection.Evaluate(predictions);
+
+                _logger.LogInformation("Model evaluation metrics:");
+                _logger.LogInformation($"  Area Under ROC Curve: {metrics.AreaUnderRocCurve}");
+                _logger.LogInformation($"  Detection Rate At False Positive Count: {metrics.DetectionRateAtFalsePositiveCount}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error during model evaluation: {ex.Message}");
+            }
+        }
 
         private void CreateBaselineModel(MLContext context)
         {
-            // Create placeholder data for the baseline model
-            var placeholderData = new List<UserFeatures>
-    {
-        new UserFeatures
-        {
-            AvgTimingInterval = 0.1f,
-            StdDevTimingInterval = 0.05f,
-            AvgKeyHoldDuration = 0.2f,
-            StdDevKeyHoldDuration = 0.1f,
-            AvgDotReactionTime = 0.3f,
-            AvgShapeReactionTime = 0.4f,
-            ShapeAccuracy = 0.9f,
-            AvgMouseSpeed = 0.5f,
-            BackspacePressCount = 2, // New feature
-            AvgBackspaceInterval = 100.0f // New feature
+            try
+            {
+                var placeholderData = new List<UserFeatures>
+                {
+                    new UserFeatures
+                    {
+                        UserId = 0,
+                        AttemptNumber = 1,
+                        DataId = 1,
+                        TimingInterval = 0.1f,
+                        KeyHoldDuration = 0.2f,
+                        DotReactionTime = 0.3f,
+                        ShapeReactionTime = 0.4f,
+                        ShapeAccuracy = 1.0f,
+                        MouseVelocity = 0.5f,
+                        BackspacePress = 1.0f,
+                        BackspaceInterval = 100.0f,
+                        DetectedLanguage = "en"
+                    },
+                    new UserFeatures
+                    {
+                        UserId = 0,
+                        AttemptNumber = 1,
+                        DataId = 2,
+                        TimingInterval = 0.12f,
+                        KeyHoldDuration = 0.22f,
+                        DotReactionTime = 0.32f,
+                        ShapeReactionTime = 0.42f,
+                        ShapeAccuracy = 0.0f,
+                        MouseVelocity = 0.6f,
+                        BackspacePress = 0.0f,
+                        BackspaceInterval = 0.0f,
+                        DetectedLanguage = "en"
+                    }
+                };
+
+                var dataView = context.Data.LoadFromEnumerable(placeholderData);
+
+                var pipeline = context.Transforms.Concatenate("Features",
+                        nameof(UserFeatures.TimingInterval),
+                        nameof(UserFeatures.KeyHoldDuration),
+                        nameof(UserFeatures.DotReactionTime),
+                        nameof(UserFeatures.ShapeReactionTime),
+                        nameof(UserFeatures.ShapeAccuracy),
+                        nameof(UserFeatures.MouseVelocity),
+                        nameof(UserFeatures.BackspacePress),
+                        nameof(UserFeatures.BackspaceInterval))
+                    .Append(context.Transforms.ReplaceMissingValues("Features"))
+                    .Append(context.Transforms.NormalizeMeanVariance("Features"))
+                    .Append(context.AnomalyDetection.Trainers.RandomizedPca(
+                        featureColumnName: "Features",
+                        rank: 4
+                    ));
+
+                var model = pipeline.Fit(dataView);
+                context.Model.Save(model, dataView.Schema, _modelPath);
+                _logger.LogInformation("Baseline model created and saved successfully.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error creating baseline model: {ex.Message}");
+                throw;
+            }
         }
-    };
 
-            // Load placeholder data into ML.NET data view
-            var dataView = context.Data.LoadFromEnumerable(placeholderData);
+        public PcaAnomalyPrediction PredictAnomaly(MLContext context, UserFeatures inputData)
+        {
+            try
+            {
+                if (!File.Exists(_modelPath))
+                {
+                    throw new FileNotFoundException("Trained model not found. Please train the model first.");
+                }
 
-            // Define the ML pipeline
-            var pipeline = context.Transforms.Concatenate("Features",
-                                                          nameof(UserFeatures.AvgTimingInterval),
-                                                          nameof(UserFeatures.StdDevTimingInterval),
-                                                          nameof(UserFeatures.AvgKeyHoldDuration),
-                                                          nameof(UserFeatures.StdDevKeyHoldDuration),
-                                                          nameof(UserFeatures.AvgDotReactionTime),
-                                                          nameof(UserFeatures.AvgShapeReactionTime),
-                                                          nameof(UserFeatures.ShapeAccuracy),
-                                                          nameof(UserFeatures.AvgMouseSpeed),
-                                                          nameof(UserFeatures.BackspacePressCount), // New feature
-                                                          nameof(UserFeatures.AvgBackspaceInterval)) // New feature
-                           .Append(context.AnomalyDetection.Trainers.RandomizedPca("Features", rank: 4));
-
-            // Train the baseline model
-            var model = pipeline.Fit(dataView);
-
-            // Save the baseline model
-            context.Model.Save(model, dataView.Schema, _modelPath);
-
-            Console.WriteLine("Baseline model created and saved successfully.");
+                ITransformer model = context.Model.Load(_modelPath, out var schema);
+                var predictionEngine = context.Model.CreatePredictionEngine<UserFeatures, PcaAnomalyPrediction>(model);
+                return predictionEngine.Predict(inputData);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error during prediction: {ex.Message}");
+                throw;
+            }
         }
 
         public UserBehaviorDataModel GetDataFromDb(int userId)
         {
-            var parametersForTimings = new SqlParameter[]
+            try
             {
-                new SqlParameter("@UserId", userId)
-            };
-            DataTable timingData = _dataHandler.ReadData("GetTimings", parametersForTimings, CommandType.StoredProcedure);
+                var parametersForTimings = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable timingData = _dataHandler.ReadData("GetTimings", parametersForTimings, CommandType.StoredProcedure);
 
-            var timings = timingData.AsEnumerable()
-                                    .GroupBy(row => row.Field<int>("AttemptNumber"))
-                                    .Select(g => g.Select(row => row.Field<double>("IntervalValue")).ToList())
-                                    .ToList();
+                var timings = timingData.AsEnumerable()
+                    .GroupBy(row => row.Field<int>("AttemptNumber"))
+                    .Select(g => g.Select(row => row.Field<double>("IntervalValue")).ToList())
+                    .ToList();
 
-            var parametersForKeyHoldTimes = new SqlParameter[]
+                var parametersForKeyHoldTimes = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable keyHoldData = _dataHandler.ReadData("GetKeyHoldTimes", parametersForKeyHoldTimes, CommandType.StoredProcedure);
+
+                var keyHoldTimes = keyHoldData.AsEnumerable()
+                    .GroupBy(row => row.Field<int>("AttemptNumber"))
+                    .Select(g => g.Select(row => new KeyHoldTime
+                    {
+                        Duration = row.Field<double>("Duration")
+                    }).ToList())
+                    .ToList();
+
+                var parametersForDotTimings = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable dotTimingData = _dataHandler.ReadData("GetDotTimings", parametersForDotTimings, CommandType.StoredProcedure);
+
+                var dotTimings = dotTimingData.AsEnumerable()
+                    .GroupBy(row => row.Field<int>("AttemptNumber"))
+                    .Select(g => g.Select(row => row.Field<double>("ReactionTime")).ToList())
+                    .ToList();
+
+                var parametersForShapeTimings = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable shapeTimingData = _dataHandler.ReadData("GetShapeTimings", parametersForShapeTimings, CommandType.StoredProcedure);
+
+                var shapeTimings = shapeTimingData.AsEnumerable()
+                    .GroupBy(row => row.Field<int>("AttemptNumber"))
+                    .Select(g => g.Select(row => new ShapeTiming
+                    {
+                        ReactionTime = row.Field<double>("ReactionTime"),
+                        IsCorrect = row.Field<bool>("IsCorrect") ? 1 : 0
+                    }).ToList())
+                    .ToList();
+
+                var parametersForMouseMovements = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable mouseMovementData = _dataHandler.ReadData("GetMouseMovements", parametersForMouseMovements, CommandType.StoredProcedure);
+
+                var mouseMovements = mouseMovementData.AsEnumerable()
+                    .GroupBy(row => row.Field<int>("AttemptNumber"))
+                    .Select(g => g.Select(row => new MouseMovement
+                    {
+                        Time = row.Field<double>("Time"),
+                        X = row.Field<double>("X"),
+                        Y = row.Field<double>("Y"),
+                        Velocity = row.Field<double>("Velocity"),
+                        Slope = row.Field<double>("Slope")
+                    }).ToList())
+                    .ToList();
+
+                var parametersForBackspaceTimings = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable backspaceTimingData = _dataHandler.ReadData("GetBackspaceTimings", parametersForBackspaceTimings, CommandType.StoredProcedure);
+
+                var backspaceTimings = backspaceTimingData.AsEnumerable()
+                    .GroupBy(row => row.Field<int>("AttemptNumber"))
+                    .Select(g => g.Select(row => new BackspaceTiming
+                    {
+                        Time = row.Field<double>("Time"),
+                        Action = row.Field<string>("Action")
+                    }).ToList())
+                    .ToList();
+
+                var parametersForDetectedLanguages = new SqlParameter[] { new SqlParameter("@UserId", userId) };
+                DataTable detectedLanguageData = _dataHandler.ReadData("GetDetectedLanguages", parametersForDetectedLanguages, CommandType.StoredProcedure);
+
+                var detectedLanguages = detectedLanguageData.AsEnumerable()
+                    .Select(row => row.Field<string>("DetectedLanguage"))
+                    .ToList();
+
+                return new UserBehaviorDataModel
+                {
+                    UserId = userId,
+                    Timings = timings,
+                    KeyHoldTimes = keyHoldTimes,
+                    DotTimings = dotTimings,
+                    ShapeTimings = shapeTimings,
+                    ShapeMouseMovements = mouseMovements,
+                    BackspaceTimings = backspaceTimings,
+                    DetectedLanguages = detectedLanguages
+                };
+            }
+            catch (Exception ex)
             {
-                new SqlParameter("@UserId", userId)
-            };
-            DataTable keyHoldData = _dataHandler.ReadData("GetKeyHoldTimes", parametersForKeyHoldTimes, CommandType.StoredProcedure);
-
-            var keyHoldTimes = keyHoldData.AsEnumerable()
-                                          .GroupBy(row => row.Field<int>("AttemptNumber"))
-                                          .Select(g => g.Select(row => new KeyHoldTime
-                                          {
-                                              Duration = row.Field<double>("Duration")
-                                          }).ToList())
-                                          .ToList();
-
-            var parametersForDotTimings = new SqlParameter[]
-            {
-                new SqlParameter("@UserId", userId)
-            };
-            DataTable dotTimingData = _dataHandler.ReadData("GetDotTimings", parametersForDotTimings, CommandType.StoredProcedure);
-
-            var dotTimings = dotTimingData.AsEnumerable()
-                                          .GroupBy(row => row.Field<int>("AttemptNumber"))
-                                          .Select(g => g.Select(row => row.Field<double>("ReactionTime")).ToList())
-                                          .ToList();
-
-            var parametersForShapeTimings = new SqlParameter[]
-            {
-                new SqlParameter("@UserId", userId)
-            };
-            DataTable shapeTimingData = _dataHandler.ReadData("GetShapeTimings", parametersForShapeTimings, CommandType.StoredProcedure);
-
-            var shapeTimings = shapeTimingData.AsEnumerable()
-                                              .GroupBy(row => row.Field<int>("AttemptNumber"))
-                                              .Select(g => g.Select(row => new ShapeTiming
-                                              {
-                                                  ReactionTime = row.Field<double>("ReactionTime"),
-                                                  IsCorrect = row.Field<bool>("IsCorrect") ? 1 : 0
-                                              }).ToList())
-                                              .ToList();
-
-            var parametersForMouseMovements = new SqlParameter[]
-            {
-                new SqlParameter("@UserId", userId)
-            };
-            DataTable mouseMovementData = _dataHandler.ReadData("GetMouseMovements", parametersForMouseMovements, CommandType.StoredProcedure);
-
-            var mouseMovements = mouseMovementData.AsEnumerable()
-                                                  .GroupBy(row => row.Field<int>("AttemptNumber"))
-                                                  .Select(g => g.Select(row => new MouseMovement
-                                                  {
-                                                      Time = row.Field<double>("Time"),
-                                                      X = row.Field<double>("X"),
-                                                      Y = row.Field<double>("Y"),
-                                                      Velocity = row.Field<double>("Velocity"),
-                                                      Slope = row.Field<double>("Slope"),
-                                                  }).ToList())
-                                                  .ToList();
-
-            var parametersForBackspaceTimings = new SqlParameter[]
-            {
-        new SqlParameter("@UserId", userId)
-            };
-            DataTable backspaceTimingData = _dataHandler.ReadData("GetBackspaceTimings", parametersForBackspaceTimings, CommandType.StoredProcedure);
-
-            var backspaceTimings = backspaceTimingData.AsEnumerable()
-                                                      .GroupBy(row => row.Field<int>("AttemptNumber"))
-                                                      .Select(g => g.Select(row => new BackspaceTiming
-                                                      {
-                                                          Time = row.Field<double>("Time"),
-                                                          Action = row.Field<string>("Action")
-                                                      }).ToList())
-                                                      .ToList();
-
-            var parametersForDetectedLanguages = new SqlParameter[]
-    {
-        new SqlParameter("@UserId", userId)
-    };
-            DataTable detectedLanguageData = _dataHandler.ReadData("GetDetectedLanguages", parametersForDetectedLanguages, CommandType.StoredProcedure);
-
-            var detectedLanguages = detectedLanguageData.AsEnumerable()
-                                                       .Select(row => row.Field<string>("DetectedLanguage"))
-                                                       .ToList();
-
-
-            return new UserBehaviorDataModel
-            {
-                UserId = userId,
-                Timings = timings,
-                KeyHoldTimes = keyHoldTimes,
-                DotTimings = dotTimings,
-                ShapeTimings = shapeTimings,
-                ShapeMouseMovements = mouseMovements,
-                BackspaceTimings = backspaceTimings,
-                DetectedLanguages = detectedLanguages
-            };
+                _logger.LogError($"Error fetching data from database: {ex.Message}");
+                throw;
+            }
         }
 
         private List<UserFeatures> ExtractFeaturesPerAttempt(UserBehaviorDataModel data)
         {
             var allFeatures = new List<UserFeatures>();
+            var random = new Random(); // For generating random values near the mean
+
+            // Determine the maximum number of data points across all feature types and attempts
+            int maxDataPoints = new int[]
+            {
+                data.Timings?.Max(t => t?.Count ?? 0) ?? 0,
+                data.KeyHoldTimes?.Max(k => k?.Count ?? 0) ?? 0,
+                data.DotTimings?.Max(d => d?.Count ?? 0) ?? 0,
+                data.ShapeTimings?.Max(s => s?.Count ?? 0) ?? 0,
+                data.ShapeMouseMovements?.Max(m => m?.Count ?? 0) ?? 0,
+                data.BackspaceTimings?.Max(b => b?.Count ?? 0) ?? 0
+            }.Max();
+
             int numberOfAttempts = new int[]
             {
-                data.Timings.Count,
-                data.KeyHoldTimes.Count,
-                data.DotTimings.Count,
-                data.ShapeTimings.Count,
-                data.ShapeMouseMovements.Count,
-                data.BackspaceTimings.Count,
-                data.DetectedLanguages.Count
+                data.Timings?.Count ?? 0,
+                data.KeyHoldTimes?.Count ?? 0,
+                data.DotTimings?.Count ?? 0,
+                data.ShapeTimings?.Count ?? 0,
+                data.ShapeMouseMovements?.Count ?? 0,
+                data.BackspaceTimings?.Count ?? 0,
+                data.DetectedLanguages?.Count ?? 0
             }.Min();
+
+            if (numberOfAttempts == 0 || maxDataPoints == 0)
+            {
+                _logger.LogWarning("No valid attempts or data points found for user {UserId}", data.UserId);
+                return allFeatures;
+            }
 
             for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
             {
-                var attemptFeatures = new UserFeatures();
-                var attemptTimings = data.Timings[attemptIndex];  // List<double>
-                attemptFeatures.AvgTimingInterval = (float)attemptTimings.Average();
-                attemptFeatures.StdDevTimingInterval = (float)Math.Sqrt(
-                    attemptTimings.Average(v => Math.Pow(v - attemptFeatures.AvgTimingInterval, 2))
-                );
+                // Pad each feature list to match maxDataPoints with random values near the mean
+                var timings = PadList(data.Timings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
+                var keyHoldTimes = PadList(data.KeyHoldTimes?.ElementAtOrDefault(attemptIndex), maxDataPoints, new KeyHoldTime { Duration = 0.0 }, random);
+                var dotTimings = PadList(data.DotTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
+                var shapeTimings = PadList(data.ShapeTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, new ShapeTiming { ReactionTime = 0.0, IsCorrect = 0 }, random);
+                var mouseMovements = PadList(data.ShapeMouseMovements?.ElementAtOrDefault(attemptIndex), maxDataPoints, new MouseMovement { Velocity = 0.0 }, random);
+                var backspaceTimings = PadList(data.BackspaceTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, new BackspaceTiming { Time = 0.0 }, random);
 
-                var attemptKeyHolds = data.KeyHoldTimes[attemptIndex]; // List<KeyHoldTime>
-                var durations = attemptKeyHolds.Select(k => k.Duration).ToList();
-                attemptFeatures.AvgKeyHoldDuration = (float)durations.Average();
-                attemptFeatures.StdDevKeyHoldDuration = (float)Math.Sqrt(
-                    durations.Average(v => Math.Pow(v - attemptFeatures.AvgKeyHoldDuration, 2))
-                );
-
-                var attemptDotTimings = data.DotTimings[attemptIndex]; // List<double>
-                attemptFeatures.AvgDotReactionTime = (float)attemptDotTimings.Average();
-
-                var attemptShapeTimings = data.ShapeTimings[attemptIndex]; // List<ShapeTiming>
-                attemptFeatures.AvgShapeReactionTime = (float)attemptShapeTimings.Average(s => s.ReactionTime);
-                attemptFeatures.ShapeAccuracy = (float)attemptShapeTimings.Average(s => s.IsCorrect);
-
-                var attemptMouseMovements = data.ShapeMouseMovements[attemptIndex]; // List<MouseMovement>
-                if (attemptMouseMovements.Count > 1)
+                // Create UserFeatures for each data point index
+                for (int dataIndex = 0; dataIndex < maxDataPoints; dataIndex++)
                 {
-                    double totalDistance = 0;
-                    double totalTime = 0;
-
-                    for (int i = 1; i < attemptMouseMovements.Count; i++)
+                    var features = new UserFeatures
                     {
-                        var dx = attemptMouseMovements[i].X - attemptMouseMovements[i - 1].X;
-                        var dy = attemptMouseMovements[i].Y - attemptMouseMovements[i - 1].Y;
-                        var dt = attemptMouseMovements[i].Time - attemptMouseMovements[i - 1].Time;
+                        UserId = data.UserId,
+                        AttemptNumber = attemptIndex + 1,
+                        DataId = dataIndex + 1,
+                        TimingInterval = (float)timings[dataIndex],
+                        KeyHoldDuration = (float)keyHoldTimes[dataIndex].Duration,
+                        DotReactionTime = (float)dotTimings[dataIndex],
+                        ShapeReactionTime = (float)shapeTimings[dataIndex].ReactionTime,
+                        ShapeAccuracy = (float)shapeTimings[dataIndex].IsCorrect,
+                        MouseVelocity = (float)mouseMovements[dataIndex].Velocity,
+                        BackspaceInterval = (float)backspaceTimings[dataIndex].Time,
+                        BackspacePress = backspaceTimings[dataIndex].Action != null ? 1.0f : 0.0f,
+                        DetectedLanguage = attemptIndex < data.DetectedLanguages?.Count ? data.DetectedLanguages[attemptIndex] : "unknown"
+                    };
 
-                        // Make sure dt > 0 to avoid division by zero
-                        if (dt > 0)
-                        {
-                            totalDistance += Math.Sqrt(dx * dx + dy * dy);
-                            totalTime += dt;
-                        }
-                    }
-
-                    if (totalTime > 0)
-                    {
-                        attemptFeatures.AvgMouseSpeed = (float)(totalDistance / totalTime);
-                    }
-                    else
-                    {
-                        attemptFeatures.AvgMouseSpeed = 0;
-                    }
+                    allFeatures.Add(features);
                 }
-                else
-                {
-                    attemptFeatures.AvgMouseSpeed = 0;
-                }
-
-
-                // 6) Extract BackspaceTiming Features
-                var attemptBackspaceTimings = data.BackspaceTimings[attemptIndex]; // List<BackspaceTiming>
-                if (attemptBackspaceTimings.Count > 0)
-                {
-                    // Calculate the number of backspace presses
-                    attemptFeatures.BackspacePressCount = attemptBackspaceTimings.Count(b => b.Action == "pressed");
-
-                    // Calculate the average time between backspace presses
-                    var backspacePressTimes = attemptBackspaceTimings
-                        .Where(b => b.Action == "pressed")
-                        .Select(b => b.Time)
-                        .ToList();
-
-                    if (backspacePressTimes.Count > 1)
-                    {
-                        double totalInterval = 0;
-                        for (int i = 1; i < backspacePressTimes.Count; i++)
-                        {
-                            totalInterval += backspacePressTimes[i] - backspacePressTimes[i - 1];
-                        }
-                        attemptFeatures.AvgBackspaceInterval = (float)(totalInterval / (backspacePressTimes.Count - 1));
-                    }
-                    else
-                    {
-                        attemptFeatures.AvgBackspaceInterval = 0;
-                    }
-                }
-                else
-                {
-                    attemptFeatures.BackspacePressCount = 0;
-                    attemptFeatures.AvgBackspaceInterval = 0;
-                }
-
-                if (attemptIndex < data.DetectedLanguages.Count)
-                {
-                    attemptFeatures.DetectedLanguage = data.DetectedLanguages[attemptIndex]; // Add detected language
-                }
-                else
-                {
-                    attemptFeatures.DetectedLanguage = "unknown"; // Default value if no language is detected
-                }
-
-                allFeatures.Add(attemptFeatures);
             }
 
+            _logger.LogInformation($"Extracted {allFeatures.Count} feature rows for UserId {data.UserId}");
             return allFeatures;
         }
 
-        public UserFeatures ExtractFeatures(UserBehaviorDataModel data)
+        // Helper method to pad a list with random values near the mean
+        private List<T> PadList<T>(IEnumerable<T> source, int targetLength, T defaultValue, Random random)
         {
-            var features = new UserFeatures();
+            if (source == null || !source.Any())
+                return Enumerable.Repeat(defaultValue, targetLength).ToList();
 
-            // 1. Timing Features
-            var allTimings = data.Timings.SelectMany(t => t).ToList();
-            features.AvgTimingInterval = (float)allTimings.Average();
-            features.StdDevTimingInterval = (float)Math.Sqrt(allTimings.Average(v => Math.Pow(v - features.AvgTimingInterval, 2)));
+            var sourceList = source.ToList();
+            int sourceCount = sourceList.Count;
 
-            // 2. Key Hold Time Features
-            var allKeyHoldDurations = data.KeyHoldTimes.SelectMany(k => k).Select(k => k.Duration).ToList();
-            features.AvgKeyHoldDuration = (float)allKeyHoldDurations.Average();
-            features.StdDevKeyHoldDuration = (float)Math.Sqrt(allKeyHoldDurations.Average(v => Math.Pow(v - features.AvgKeyHoldDuration, 2)));
+            if (sourceCount >= targetLength)
+                return sourceList.Take(targetLength).ToList();
 
-            // 3. Dot Timing Features
-            var allDotTimings = data.DotTimings.SelectMany(d => d).ToList();
-            features.AvgDotReactionTime = (float)allDotTimings.Average();
+            var paddedList = new List<T>(sourceList);
+            double mean;
 
-            // 4. Shape Timing Features
-            var allShapeTimings = data.ShapeTimings.SelectMany(s => s).ToList();
-            features.AvgShapeReactionTime = (float)allShapeTimings.Average(s => s.ReactionTime);
-            features.ShapeAccuracy = (float)allShapeTimings.Average(s => s.IsCorrect);
-
-            // 5. Mouse Movement Features
-            var allMouseMovements = data.ShapeMouseMovements.SelectMany(m => m).ToList();
-            if (allMouseMovements.Count > 1)
+            // Calculate mean based on type T
+            if (typeof(T) == typeof(double))
             {
-                double totalDistance = 0;
-                double totalTime = 0;
-
-                for (int i = 1; i < allMouseMovements.Count; i++)
+                mean = sourceList.Cast<double>().Average();
+                while (paddedList.Count < targetLength)
                 {
-                    var dx = allMouseMovements[i].X - allMouseMovements[i - 1].X;
-                    var dy = allMouseMovements[i].Y - allMouseMovements[i - 1].Y;
-                    var dt = allMouseMovements[i].Time - allMouseMovements[i - 1].Time;
-
-                    // Make sure dt > 0 to avoid division by zero
-                    if (dt > 0)
-                    {
-                        totalDistance += Math.Sqrt(dx * dx + dy * dy);
-                        totalTime += dt;
-                    }
+                    double variation = mean * 0.1; // ±10% of mean
+                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation; // Random value within ±variation
+                    paddedList.Add((T)(object)randomValue);
                 }
-
-                if (totalTime > 0)
+            }
+            else if (typeof(T) == typeof(KeyHoldTime))
+            {
+                mean = sourceList.Cast<KeyHoldTime>().Average(k => k.Duration);
+                while (paddedList.Count < targetLength)
                 {
-                    features.AvgMouseSpeed = (float)(totalDistance / totalTime);
+                    double variation = mean * 0.1;
+                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
+                    paddedList.Add((T)(object)new KeyHoldTime { Duration = randomValue });
                 }
-                else
+            }
+            else if (typeof(T) == typeof(ShapeTiming))
+            {
+                mean = sourceList.Cast<ShapeTiming>().Average(s => s.ReactionTime);
+                double accuracyMean = sourceList.Cast<ShapeTiming>().Average(s => s.IsCorrect);
+                while (paddedList.Count < targetLength)
                 {
-                    features.AvgMouseSpeed = 0;
+                    double variation = mean * 0.1;
+                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
+                    int randomAccuracy = random.NextDouble() < accuracyMean ? 1 : 0; // Randomly assign based on mean accuracy
+                    paddedList.Add((T)(object)new ShapeTiming { ReactionTime = randomValue, IsCorrect = randomAccuracy });
+                }
+            }
+            else if (typeof(T) == typeof(MouseMovement))
+            {
+                mean = sourceList.Cast<MouseMovement>().Average(m => m.Velocity);
+                while (paddedList.Count < targetLength)
+                {
+                    double variation = mean * 0.1;
+                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
+                    paddedList.Add((T)(object)new MouseMovement { Velocity = randomValue });
+                }
+            }
+            else if (typeof(T) == typeof(BackspaceTiming))
+            {
+                mean = sourceList.Cast<BackspaceTiming>().Average(b => b.Time);
+                double actionProbability = sourceList.Cast<BackspaceTiming>().Average(b => b.Action != null ? 1.0 : 0.0);
+                while (paddedList.Count < targetLength)
+                {
+                    double variation = mean * 0.1;
+                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
+                    string randomAction = random.NextDouble() < actionProbability ? "Backspace" : null;
+                    paddedList.Add((T)(object)new BackspaceTiming { Time = randomValue, Action = randomAction });
                 }
             }
             else
             {
-                features.AvgMouseSpeed = 0;
+                // Fallback to default value if type is not handled
+                paddedList.AddRange(Enumerable.Repeat(defaultValue, targetLength - sourceCount));
             }
 
-            // 6. Backspace Timing Features
-            var allBackspaceTimings = data.BackspaceTimings.SelectMany(b => b).ToList();
-            if (allBackspaceTimings.Count > 0)
+            return paddedList.Take(targetLength).ToList();
+        }
+
+        private List<UserFeatures> GetRawDataFromDb(int userId)
+        {
+            try
             {
-                // Calculate the number of backspace presses
-                features.BackspacePressCount = allBackspaceTimings.Count(b => b.Action == "pressed");
-
-                // Calculate the average time between backspace presses
-                var backspacePressTimes = allBackspaceTimings
-                    .Where(b => b.Action == "pressed")
-                    .Select(b => b.Time)
-                    .ToList();
-
-                if (backspacePressTimes.Count > 1)
-                {
-                    double totalInterval = 0;
-                    for (int i = 1; i < backspacePressTimes.Count; i++)
-                    {
-                        totalInterval += backspacePressTimes[i] - backspacePressTimes[i - 1];
-                    }
-                    features.AvgBackspaceInterval = (float)(totalInterval / (backspacePressTimes.Count - 1));
-                }
-                else
-                {
-                    features.AvgBackspaceInterval = 0;
-                }
+                var userData = GetDataFromDb(userId);
+                return ExtractFeaturesPerAttempt(userData);
             }
-            else
+            catch (Exception ex)
             {
-                features.BackspacePressCount = 0;
-                features.AvgBackspaceInterval = 0;
+                _logger.LogError($"Error getting raw data from database: {ex.Message}");
+                throw;
             }
+        }
 
-            return features;
+        internal UserFeatures ExtractFeatures(UserBehaviorDataModel userData)
+        {
+            throw new NotImplementedException();
         }
     }
-
 }

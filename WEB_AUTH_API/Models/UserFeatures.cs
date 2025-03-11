@@ -2,49 +2,46 @@
 {
     public class UserFeatures
     {
-        public float AvgTimingInterval { get; set; }
-        public float StdDevTimingInterval { get; set; }
-        public float AvgKeyHoldDuration { get; set; }
-        public float StdDevKeyHoldDuration { get; set; }
-        public float AvgDotReactionTime { get; set; }
-        public float AvgShapeReactionTime { get; set; }
-        public float ShapeAccuracy { get; set; }
-        public float AvgMouseSpeed { get; set; }
-        public float BackspacePressCount { get; set; }
-        public float AvgBackspaceInterval { get; set; }
-        public string DetectedLanguage { get; set; }
+        public int UserId { get; set; }
+        public int AttemptNumber { get; set; }
+        public int DataId { get; set; }                    // Unique identifier for each data point
+        public float TimingInterval { get; set; }          // Single timing interval
+        public float KeyHoldDuration { get; set; }         // Single key hold duration
+        public float DotReactionTime { get; set; }         // Single dot reaction time
+        public float ShapeReactionTime { get; set; }       // Single shape reaction time
+        public float ShapeAccuracy { get; set; }           // 1 or 0 for correct/incorrect
+        public float MouseVelocity { get; set; }           // Single mouse velocity
+        public float BackspacePress { get; set; }          // 1 if pressed, 0 if not
+        public float BackspaceInterval { get; set; }       // Time since last backspace
+        public string DetectedLanguage { get; set; }       // Kept for reference, not used in PCA
 
         public UserFeatures(double[] featureArray)
         {
-            if (featureArray.Length != 8)
+            if (featureArray.Length != 8) // Adjusted for numeric features used in PCA
                 throw new ArgumentException("Feature array must contain exactly 8 elements.");
 
-            AvgTimingInterval = (float)featureArray[0];
-            StdDevTimingInterval = (float)featureArray[1];
-            AvgKeyHoldDuration = (float)featureArray[2];
-            StdDevKeyHoldDuration = (float)featureArray[3];
-            AvgDotReactionTime = (float)featureArray[4];
-            AvgShapeReactionTime = (float)featureArray[5];
-            ShapeAccuracy = (float)featureArray[6];
-            AvgMouseSpeed = (float)featureArray[7];
-            BackspacePressCount = (float)featureArray[8]; 
-            AvgBackspaceInterval = (float)featureArray[9];
+            TimingInterval = (float)featureArray[0];
+            KeyHoldDuration = (float)featureArray[1];
+            DotReactionTime = (float)featureArray[2];
+            ShapeReactionTime = (float)featureArray[3];
+            ShapeAccuracy = (float)featureArray[4];
+            MouseVelocity = (float)featureArray[5];
+            BackspacePress = (float)featureArray[6];
+            BackspaceInterval = (float)featureArray[7];
         }
 
         public double[] ToArray()
         {
             return new double[]
             {
-            AvgTimingInterval,
-            StdDevTimingInterval,
-            AvgKeyHoldDuration,
-            StdDevKeyHoldDuration,
-            AvgDotReactionTime,
-            AvgShapeReactionTime,
-            ShapeAccuracy,
-            AvgMouseSpeed,
-            BackspacePressCount,
-            AvgBackspaceInterval,
+                TimingInterval,
+                KeyHoldDuration,
+                DotReactionTime,
+                ShapeReactionTime,
+                ShapeAccuracy,
+                MouseVelocity,
+                BackspacePress,
+                BackspaceInterval
             };
         }
 

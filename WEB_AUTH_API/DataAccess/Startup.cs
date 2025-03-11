@@ -1,8 +1,8 @@
 ﻿using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.ML;
 
 namespace WEB_AUTH_API.DataAccess
 {
@@ -97,6 +97,7 @@ namespace WEB_AUTH_API.DataAccess
                     }
                 });
             });
+            services.AddSingleton<MLContext>();
             services.AddSingleton<DataHandeler>();
             services.AddSingleton<ModelInitializer>();
             services.AddCors(options =>

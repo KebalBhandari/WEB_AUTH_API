@@ -39,6 +39,40 @@ namespace WEB_AUTH_API.DataAccess
             }
         }
 
+        public async Task<int> InsertAsync(string sql, SqlParameter[] param, CommandType cmdType)
+        {
+            using (SqlConnection con = new SqlConnection(this._connectionString))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand())
+                    {
+                        cmd.Connection = con;
+                        cmd.CommandText = sql;
+                        cmd.CommandType = cmdType;
+                        cmd.CommandTimeout = 0;
+
+                        if (param != null)
+                        {
+                            cmd.Parameters.AddRange(param);
+                        }
+
+                        await con.OpenAsync(); // Open the connection asynchronously
+                        int result = await cmd.ExecuteNonQueryAsync(); // Execute the command asynchronously
+                        return result;
+                    }
+                }
+                catch (SqlException ex)
+                {
+                    throw new Exception("A database error occurred.", ex);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception("An unexpected error occurred.", ex);
+                }
+            }
+        }
+
 
         //----------------------InsertUpdate -----------------------------------
         public int InsertUpdate(string sql, SqlParameter[] param, CommandType cmdType)
