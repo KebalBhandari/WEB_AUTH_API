@@ -15,6 +15,7 @@
         public List<List<MouseMovement>> ShapeMouseMovements { get; set; } = new List<List<MouseMovement>>();
 
         public List<List<BackspaceTiming>> BackspaceTimings { get; set; } = new List<List<BackspaceTiming>>();
+        public List<string> DetectedLanguages { get; set; } = new List<string>();
 
     }
 
@@ -34,6 +35,8 @@
         public double Time { get; set; }
         public double X { get; set; }
         public double Y { get; set; }
+        public double Velocity { get; set; }
+        public double Slope { get; set; }
     }
 
 }

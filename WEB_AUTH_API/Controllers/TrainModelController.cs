@@ -127,7 +127,9 @@ namespace WEB_AUTH_API.Controllers
                         new SqlParameter("@AttemptNumber", attemptNumber),
                         new SqlParameter("@Time", mouseMovement.Time),
                         new SqlParameter("@X", mouseMovement.X),
-                        new SqlParameter("@Y", mouseMovement.Y)
+                        new SqlParameter("@Y", mouseMovement.Y),
+                        new SqlParameter("@velocity", mouseMovement.Velocity),
+                        new SqlParameter("@slope", mouseMovement.Slope),
                             };
 
                             int result = _dataHandler.Insert("InsertMouseMovements", parameters, CommandType.StoredProcedure);
@@ -156,6 +158,23 @@ namespace WEB_AUTH_API.Controllers
                             if (result <= 0)
                                 throw new Exception("Failed to insert backspace timing data.");
                         }
+                    }
+                }));
+
+                tasks.Add(Task.Run(() =>
+                {
+                    foreach (var (detectedLanguage, attemptNumber) in userDataModel.DetectedLanguages.Select((value, idx) => (value, idx + 1)))
+                    {
+                        var parameters = new SqlParameter[]
+                        {
+                    new SqlParameter("@UserId", userDataModel.TokenNo),
+                    new SqlParameter("@AttemptNumber", attemptNumber),
+                    new SqlParameter("@DetectedLanguage", detectedLanguage)
+                        };
+
+                        int result = _dataHandler.Insert("InsertDetectedLanguages", parameters, CommandType.StoredProcedure);
+                        if (result <= 0)
+                            throw new Exception("Failed to insert detected language data.");
                     }
                 }));
 

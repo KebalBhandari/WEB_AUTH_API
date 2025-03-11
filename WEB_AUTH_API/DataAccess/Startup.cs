@@ -64,7 +64,10 @@ namespace WEB_AUTH_API.DataAccess
 
             services.AddControllers();
             services.AddMvc();
-            services.AddMvc().AddNewtonsoftJson();
+            services.AddControllers().AddNewtonsoftJson(options =>
+            {
+                options.SerializerSettings.ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver();
+            });
 
             // Configure Swagger to include JWT Authentication
             services.AddSwaggerGen(c =>

@@ -209,7 +209,9 @@ namespace WEB_AUTH_API.DataAccess
                                                   {
                                                       Time = row.Field<double>("Time"),
                                                       X = row.Field<double>("X"),
-                                                      Y = row.Field<double>("Y")
+                                                      Y = row.Field<double>("Y"),
+                                                      Velocity = row.Field<double>("Velocity"),
+                                                      Slope = row.Field<double>("Slope"),
                                                   }).ToList())
                                                   .ToList();
 
@@ -228,6 +230,17 @@ namespace WEB_AUTH_API.DataAccess
                                                       }).ToList())
                                                       .ToList();
 
+            var parametersForDetectedLanguages = new SqlParameter[]
+    {
+        new SqlParameter("@UserId", userId)
+    };
+            DataTable detectedLanguageData = _dataHandler.ReadData("GetDetectedLanguages", parametersForDetectedLanguages, CommandType.StoredProcedure);
+
+            var detectedLanguages = detectedLanguageData.AsEnumerable()
+                                                       .Select(row => row.Field<string>("DetectedLanguage"))
+                                                       .ToList();
+
+
             return new UserBehaviorDataModel
             {
                 UserId = userId,
@@ -236,7 +249,8 @@ namespace WEB_AUTH_API.DataAccess
                 DotTimings = dotTimings,
                 ShapeTimings = shapeTimings,
                 ShapeMouseMovements = mouseMovements,
-                BackspaceTimings = backspaceTimings
+                BackspaceTimings = backspaceTimings,
+                DetectedLanguages = detectedLanguages
             };
         }
 
@@ -250,7 +264,8 @@ namespace WEB_AUTH_API.DataAccess
                 data.DotTimings.Count,
                 data.ShapeTimings.Count,
                 data.ShapeMouseMovements.Count,
-                data.BackspaceTimings.Count
+                data.BackspaceTimings.Count,
+                data.DetectedLanguages.Count
             }.Min();
 
             for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
@@ -342,6 +357,15 @@ namespace WEB_AUTH_API.DataAccess
                 {
                     attemptFeatures.BackspacePressCount = 0;
                     attemptFeatures.AvgBackspaceInterval = 0;
+                }
+
+                if (attemptIndex < data.DetectedLanguages.Count)
+                {
+                    attemptFeatures.DetectedLanguage = data.DetectedLanguages[attemptIndex]; // Add detected language
+                }
+                else
+                {
+                    attemptFeatures.DetectedLanguage = "unknown"; // Default value if no language is detected
                 }
 
                 allFeatures.Add(attemptFeatures);

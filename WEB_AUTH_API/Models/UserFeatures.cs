@@ -12,8 +12,8 @@
         public float AvgMouseSpeed { get; set; }
         public float BackspacePressCount { get; set; }
         public float AvgBackspaceInterval { get; set; }
+        public string DetectedLanguage { get; set; }
 
-        // Constructor to initialize from a double array
         public UserFeatures(double[] featureArray)
         {
             if (featureArray.Length != 8)
