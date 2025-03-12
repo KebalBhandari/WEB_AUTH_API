@@ -435,6 +435,38 @@ namespace WEB_AUTH_API.DataAccess
             }
         }
 
+        public async Task<string> ExecuteScalarAsync(string sql, SqlParameter[] param, CommandType cmdType)
+        {
+            using (SqlConnection conn = new SqlConnection(_connectionString))
+            {
+                try
+                {
+                    using (SqlCommand comm = new SqlCommand())
+                    {
+                        comm.Connection = conn;
+                        comm.CommandText = sql;
+                        comm.CommandType = cmdType;
+                        comm.CommandTimeout = 0;
+                        if (param != null)
+                        {
+                            comm.Parameters.AddRange(param);
+                        }
+                        await conn.OpenAsync();
+                        object result = await comm.ExecuteScalarAsync();
+                        return result?.ToString();
+                    }
+                }
+                catch (SqlException ex)
+                {
+                    throw new Exception("A database error occurred while executing scalar query.", ex);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception("An unexpected error occurred while executing scalar query.", ex);
+                }
+            }
+        }
+
 
 
         public string DataTableToJSON(DataTable Dt, string tagname)

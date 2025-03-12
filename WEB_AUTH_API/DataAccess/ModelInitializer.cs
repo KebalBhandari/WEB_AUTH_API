@@ -130,16 +130,52 @@ namespace WEB_AUTH_API.DataAccess
         {
             try
             {
+                // Transform the test data to get predictions
                 var predictions = model.Transform(testData);
-                var metrics = context.AnomalyDetection.Evaluate(predictions);
 
-                _logger.LogInformation("Model evaluation metrics:");
-                _logger.LogInformation($"  Area Under ROC Curve: {metrics.AreaUnderRocCurve}");
-                _logger.LogInformation($"  Detection Rate At False Positive Count: {metrics.DetectionRateAtFalsePositiveCount}");
+                // Convert predictions to an enumerable for analysis
+                var predictionResults = context.Data.CreateEnumerable<PcaAnomalyPrediction>(
+                    predictions, reuseRowObject: false);
+
+                // Analyze predictions
+                int totalCount = 0;
+                int anomalyCount = 0;
+                double totalScore = 0;
+                var scores = new List<float>();
+
+                foreach (var prediction in predictionResults)
+                {
+                    totalCount++;
+                    totalScore += prediction.Score;
+                    scores.Add(prediction.Score);
+                    if (prediction.IsAnomaly)
+                    {
+                        anomalyCount++;
+                    }
+                }
+
+                if (totalCount == 0)
+                {
+                    _logger.LogWarning("No predictions generated for evaluation.");
+                    return;
+                }
+
+                // Calculate basic statistics
+                double averageScore = totalScore / totalCount;
+                double anomalyRate = (double)anomalyCount / totalCount;
+                double scoreStdDev = scores.Any() ? Math.Sqrt(scores.Average(s => Math.Pow(s - averageScore, 2))) : 0;
+
+                _logger.LogInformation("Model evaluation results (unsupervised):");
+                _logger.LogInformation($"  Total data points: {totalCount}");
+                _logger.LogInformation($"  Anomalies detected: {anomalyCount}");
+                _logger.LogInformation($"  Anomaly rate: {anomalyRate:P2}"); // Percentage format
+                _logger.LogInformation($"  Average anomaly score: {averageScore:F4}");
+                _logger.LogInformation($"  Score standard deviation: {scoreStdDev:F4}");
             }
             catch (Exception ex)
             {
                 _logger.LogError($"Error during model evaluation: {ex.Message}");
+                // Optionally rethrow if you want the caller to handle it
             }
         }
 
@@ -361,7 +397,6 @@ namespace WEB_AUTH_API.DataAccess
 
             for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
             {
-                // Pad each feature list to match maxDataPoints with random values near the mean
                 var timings = PadList(data.Timings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
                 var keyHoldTimes = PadList(data.KeyHoldTimes?.ElementAtOrDefault(attemptIndex), maxDataPoints, new KeyHoldTime { Duration = 0.0 }, random);
                 var dotTimings = PadList(data.DotTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
@@ -369,7 +404,6 @@ namespace WEB_AUTH_API.DataAccess
                 var mouseMovements = PadList(data.ShapeMouseMovements?.ElementAtOrDefault(attemptIndex), maxDataPoints, new MouseMovement { Velocity = 0.0 }, random);
                 var backspaceTimings = PadList(data.BackspaceTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, new BackspaceTiming { Time = 0.0 }, random);
 
-                // Create UserFeatures for each data point index
                 for (int dataIndex = 0; dataIndex < maxDataPoints; dataIndex++)
                 {
                     var features = new UserFeatures
@@ -396,7 +430,6 @@ namespace WEB_AUTH_API.DataAccess
             return allFeatures;
         }
 
-        // Helper method to pad a list with random values near the mean
         private List<T> PadList<T>(IEnumerable<T> source, int targetLength, T defaultValue, Random random)
         {
             if (source == null || !source.Any())
@@ -411,14 +444,13 @@ namespace WEB_AUTH_API.DataAccess
             var paddedList = new List<T>(sourceList);
             double mean;
 
-            // Calculate mean based on type T
             if (typeof(T) == typeof(double))
             {
                 mean = sourceList.Cast<double>().Average();
                 while (paddedList.Count < targetLength)
                 {
-                    double variation = mean * 0.1; // ±10% of mean
-                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation; // Random value within ±variation
+                    double variation = mean * 0.1; 
+                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
                     paddedList.Add((T)(object)randomValue);
                 }
             }
@@ -440,7 +472,7 @@ namespace WEB_AUTH_API.DataAccess
                 {
                     double variation = mean * 0.1;
                     double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
-                    int randomAccuracy = random.NextDouble() < accuracyMean ? 1 : 0; // Randomly assign based on mean accuracy
+                    int randomAccuracy = random.NextDouble() < accuracyMean ? 1 : 0; 
                     paddedList.Add((T)(object)new ShapeTiming { ReactionTime = randomValue, IsCorrect = randomAccuracy });
                 }
             }
@@ -468,7 +500,6 @@ namespace WEB_AUTH_API.DataAccess
             }
             else
             {
-                // Fallback to default value if type is not handled
                 paddedList.AddRange(Enumerable.Repeat(defaultValue, targetLength - sourceCount));
             }
 
