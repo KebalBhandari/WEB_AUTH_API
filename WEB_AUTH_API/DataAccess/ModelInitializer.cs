@@ -175,7 +175,6 @@ namespace WEB_AUTH_API.DataAccess
             catch (Exception ex)
             {
                 _logger.LogError($"Error during model evaluation: {ex.Message}");
-                // Optionally rethrow if you want the caller to handle it
             }
         }
 
