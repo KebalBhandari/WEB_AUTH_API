@@ -112,17 +112,21 @@ namespace WEB_AUTH_API.Controllers
                 {
                     var parameters = new SqlParameter[]
                     {
-                        new SqlParameter("@UserId", userDataModel.TokenNo),
-                        new SqlParameter("@AttemptNumber", attemptNumber),
-                        new SqlParameter("@Duration", keyHold.Duration)
+                new SqlParameter("@UserId", userDataModel.TokenNo),
+                new SqlParameter("@AttemptNumber", attemptNumber),
+                new SqlParameter("@KeydownTime", keyHold.KeydownTime),
+                new SqlParameter("@KeyupTime", keyHold.KeyupTime),
+                new SqlParameter("@Duration", keyHold.Duration)
                     };
 
                     int result = await _dataHandler.InsertAsync("InsertKeyHoldTimes", parameters, CommandType.StoredProcedure);
+
                     if (result <= 0)
                         throw new Exception("Failed to insert key hold time data.");
                 }
             }
         }
+
 
         private async Task InsertDotTimingsAsync(UserDataModel userDataModel)
         {
@@ -191,16 +195,16 @@ namespace WEB_AUTH_API.Controllers
 
         private async Task InsertBackspaceTimingsAsync(UserDataModel userDataModel)
         {
-            foreach (var (backspaceTimingList, attemptNumber) in userDataModel.BackspaceTimings.Select((value, idx) => (value, idx + 1)))
+            foreach (var (backSpaceTimingList, attemptNumber) in userDataModel.BackSpaceTimings.Select((value, idx) => (value, idx + 1)))
             {
-                foreach (var backspaceTiming in backspaceTimingList)
+                foreach (var backSpaceTiming in backSpaceTimingList)
                 {
                     var parameters = new SqlParameter[]
                     {
                         new SqlParameter("@UserId", userDataModel.TokenNo),
                         new SqlParameter("@AttemptNumber", attemptNumber),
-                        new SqlParameter("@Time", backspaceTiming.Time),
-                        new SqlParameter("@Action", backspaceTiming.Action)
+                        new SqlParameter("@Time", backSpaceTiming.Time),
+                        new SqlParameter("@Action", backSpaceTiming.Action)
                     };
 
                     int result = await _dataHandler.InsertAsync("InsertBackspaceTimings", parameters, CommandType.StoredProcedure);
@@ -279,12 +283,12 @@ namespace WEB_AUTH_API.Controllers
                 _logger.LogInformation("Prediction completed for UserId={UserId}: IsAnomaly={IsAnomaly}, Score={Score}, Confidence={Confidence}%",
                     userId, isAnomaly, score, confidence);
 
-                await SavePredictionResultAsync(userData.TokenNo, isAnomaly, score, confidence, "v1.0"); 
+                await SavePredictionResultAsync(userData.TokenNo, isAnomaly, score, confidence, "v1.0");
 
                 var response = new
                 {
                     Status = "SUCCESS",
-                    IsAnomaly = isAnomaly, 
+                    IsAnomaly = isAnomaly,
                     AnomalyScore = score,
                     ConfidencePercentage = confidence,
                     UserId = userId,
@@ -356,12 +360,12 @@ namespace WEB_AUTH_API.Controllers
             catch (SqlException ex)
             {
                 _logger.LogError(ex, "Database error while retrieving UserId for TokenNo={TokenNo}", tokenNo);
-                throw; 
+                throw;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Unexpected error while retrieving UserId for TokenNo={TokenNo}", tokenNo);
-                throw; 
+                throw;
             }
         }
 
@@ -369,13 +373,13 @@ namespace WEB_AUTH_API.Controllers
         {
             return new UserBehaviorDataModel
             {
-                UserId = userId, 
+                UserId = userId,
                 Timings = userData.Timings ?? new List<List<double>>(),
                 KeyHoldTimes = userData.KeyHoldTimes ?? new List<List<KeyHoldTime>>(),
                 DotTimings = userData.DotTimings ?? new List<List<double>>(),
                 ShapeTimings = userData.ShapeTimings ?? new List<List<ShapeTiming>>(),
                 ShapeMouseMovements = userData.ShapeMouseMovements ?? new List<List<MouseMovement>>(),
-                BackspaceTimings = userData.BackspaceTimings ?? new List<List<BackspaceTiming>>(),
+                BackSpaceTimings = userData.BackSpaceTimings ?? new List<List<BackSpaceTiming>>(),
                 DetectedLanguages = userData.DetectedLanguages ?? new List<string>()
             };
         }
@@ -419,7 +423,7 @@ namespace WEB_AUTH_API.Controllers
         data.DotTimings?.Any() == true ? data.DotTimings.Max(d => d?.Count ?? 0) : 0,
         data.ShapeTimings?.Any() == true ? data.ShapeTimings.Max(s => s?.Count ?? 0) : 0,
         data.ShapeMouseMovements?.Any() == true ? data.ShapeMouseMovements.Max(m => m?.Count ?? 0) : 0,
-        data.BackspaceTimings?.Any() == true ? data.BackspaceTimings.Max(b => b?.Count ?? 0) : 0
+        data.BackSpaceTimings?.Any() == true ? data.BackSpaceTimings.Max(b => b?.Count ?? 0) : 0
     }.Max();
 
             // Calculate number of attempts with null checking
@@ -430,7 +434,7 @@ namespace WEB_AUTH_API.Controllers
         data.DotTimings?.Count ?? 0,
         data.ShapeTimings?.Count ?? 0,
         data.ShapeMouseMovements?.Count ?? 0,
-        data.BackspaceTimings?.Count ?? 0,
+        data.BackSpaceTimings?.Count ?? 0,
         data.DetectedLanguages?.Count ?? 0
             }.Where(x => x > 0).DefaultIfEmpty(0).Min();
 
@@ -443,23 +447,34 @@ namespace WEB_AUTH_API.Controllers
             for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
             {
                 var timings = PadList(data.Timings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
-                var keyHoldTimes = PadList(data.KeyHoldTimes?.ElementAtOrDefault(attemptIndex), maxDataPoints, new KeyHoldTime { Duration = 0.0 }, random);
+                var keyHoldTimes = PadList(
+                    data.KeyHoldTimes?.ElementAtOrDefault(attemptIndex),
+                    maxDataPoints,
+                    new KeyHoldTime
+                    {
+                        KeydownTime = 0.0,
+                        KeyupTime = 0.0,
+                        Duration = 0.0
+                    },
+                    random
+                );
+
                 var dotTimings = PadList(data.DotTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
                 var shapeTimings = PadList(data.ShapeTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, new ShapeTiming { ReactionTime = 0.0, IsCorrect = 0 }, random);
                 var mouseMovements = PadList(data.ShapeMouseMovements?.ElementAtOrDefault(attemptIndex), maxDataPoints, new MouseMovement { Velocity = 0.0 }, random);
 
                 // Provide default empty backspace timings if null
                 var backspaceTimings = PadList(
-                    data.BackspaceTimings?.ElementAtOrDefault(attemptIndex) ?? new List<BackspaceTiming>(),
+                    data.BackSpaceTimings?.ElementAtOrDefault(attemptIndex) ?? new List<BackSpaceTiming>(),
                     maxDataPoints,
-                    new BackspaceTiming { Time = 0.0, Action = null },
+                    new BackSpaceTiming { Time = 0.0, Action = null },
                     random
                 );
 
                 for (int dataIndex = 0; dataIndex < maxDataPoints; dataIndex++)
                 {
                     // Safely access backspace timing with fallback
-                    var backspaceTiming = backspaceTimings[dataIndex] ?? new BackspaceTiming { Time = 0.0, Action = null };
+                    var backspaceTiming = backspaceTimings[dataIndex] ?? new BackSpaceTiming { Time = 0.0, Action = null };
 
                     var features = new UserFeatures
                     {
@@ -518,16 +533,28 @@ namespace WEB_AUTH_API.Controllers
                 }
                 else if (typeof(T) == typeof(KeyHoldTime))
                 {
-                    var values = sourceList.Cast<KeyHoldTime>();
-                    double mean = values.Any() ? values.Average(k => k.Duration) : 0.0;
-                    double stdDev = values.Any() ? Math.Sqrt(values.Average(k => Math.Pow(k.Duration - mean, 2))) : 0.1;
+                    var values = sourceList.Cast<KeyHoldTime>().ToList();
+
+                    double meanDuration = values.Any() ? values.Average(k => k.Duration) : 100.0; // default mean (e.g., 100ms)
+                    double stdDevDuration = values.Any() ? Math.Sqrt(values.Average(k => Math.Pow(k.Duration - meanDuration, 2))) : 50.0; // default std dev
+
+                    double meanInterval = values.Any() ? values.Average(k => k.KeydownTime) : 100.0;
+                    double stdDevInterval = values.Any() ? Math.Sqrt(values.Average(k => Math.Pow(k.KeydownTime - meanInterval, 2))) : 50.0;
 
                     while (paddedList.Count < targetLength)
                     {
-                        double randomValue = mean + (random.NextDouble() * 2 - 1) * stdDev * 0.5;
-                        paddedList.Add((T)(object)new KeyHoldTime { Duration = Math.Max(0, randomValue) });
+                        double randomDuration = meanDuration + (random.NextDouble() * 2 - 1) * stdDevDuration * 0.5;
+                        double randomKeydownTime = meanInterval + (random.NextDouble() * 2 - 1) * stdDevInterval * 0.5;
+
+                        paddedList.Add((T)(object)new KeyHoldTime
+                        {
+                            KeydownTime = Math.Max(0, randomKeydownTime),
+                            Duration = Math.Max(0, randomDuration),
+                            KeyupTime = Math.Max(0, randomKeydownTime + randomDuration)
+                        });
                     }
                 }
+
                 else if (typeof(T) == typeof(ShapeTiming))
                 {
                     var values = sourceList.Cast<ShapeTiming>();
@@ -561,9 +588,9 @@ namespace WEB_AUTH_API.Controllers
                         });
                     }
                 }
-                else if (typeof(T) == typeof(BackspaceTiming))
+                else if (typeof(T) == typeof(BackSpaceTiming))
                 {
-                    var values = sourceList.Cast<BackspaceTiming>();
+                    var values = sourceList.Cast<BackSpaceTiming>();
                     double mean = values.Any() ? values.Average(b => b.Time) : 0.0;
                     double stdDev = values.Any() ? Math.Sqrt(values.Average(b => Math.Pow(b.Time - mean, 2))) : 0.1;
                     double actionProbability = values.Any() ? values.Average(b => b.Action != null ? 1.0 : 0.0) : 0.5;
@@ -572,7 +599,7 @@ namespace WEB_AUTH_API.Controllers
                     {
                         double randomValue = mean + (random.NextDouble() * 2 - 1) * stdDev * 0.5;
                         string randomAction = random.NextDouble() < actionProbability ? "Backspace" : null;
-                        paddedList.Add((T)(object)new BackspaceTiming
+                        paddedList.Add((T)(object)new BackSpaceTiming
                         {
                             Time = Math.Max(0, randomValue),
                             Action = randomAction

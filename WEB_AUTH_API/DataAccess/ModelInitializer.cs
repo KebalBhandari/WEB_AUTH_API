@@ -76,10 +76,12 @@ namespace WEB_AUTH_API.DataAccess
                     return;
                 }
 
-                // Filter invalid data
+                // Enhanced filtering of invalid data (include KeydownTime, KeyupTime)
                 trainingData = trainingData.Where(f =>
                     !float.IsNaN(f.TimingInterval) && !float.IsInfinity(f.TimingInterval) &&
                     !float.IsNaN(f.KeyHoldDuration) && !float.IsInfinity(f.KeyHoldDuration) &&
+                    !float.IsNaN(f.KeydownTime) && !float.IsInfinity(f.KeydownTime) &&
+                    !float.IsNaN(f.KeyupTime) && !float.IsInfinity(f.KeyupTime) &&
                     !float.IsNaN(f.DotReactionTime) && !float.IsInfinity(f.DotReactionTime) &&
                     !float.IsNaN(f.ShapeReactionTime) && !float.IsInfinity(f.ShapeReactionTime) &&
                     !float.IsNaN(f.ShapeAccuracy) && !float.IsInfinity(f.ShapeAccuracy) &&
@@ -95,11 +97,14 @@ namespace WEB_AUTH_API.DataAccess
                 }
 
                 _logger.LogInformation($"Training with {trainingData.Count} data points.");
+
                 var dataView = context.Data.LoadFromEnumerable(trainingData);
 
                 var pipeline = context.Transforms.Concatenate("Features",
                         nameof(UserFeatures.TimingInterval),
                         nameof(UserFeatures.KeyHoldDuration),
+                        nameof(UserFeatures.KeydownTime),    // newly added
+                        nameof(UserFeatures.KeyupTime),      // newly added
                         nameof(UserFeatures.DotReactionTime),
                         nameof(UserFeatures.ShapeReactionTime),
                         nameof(UserFeatures.ShapeAccuracy),
@@ -110,7 +115,7 @@ namespace WEB_AUTH_API.DataAccess
                     .Append(context.Transforms.NormalizeMeanVariance("Features"))
                     .Append(context.AnomalyDetection.Trainers.RandomizedPca(
                         featureColumnName: "Features",
-                        rank: 4 // Adjust if needed
+                        rank: 5 // Updated to reflect additional features
                     ));
 
                 var model = pipeline.Fit(dataView);
@@ -125,6 +130,7 @@ namespace WEB_AUTH_API.DataAccess
                 throw;
             }
         }
+
 
         private void EvaluateModel(MLContext context, IDataView testData, ITransformer model)
         {
@@ -183,44 +189,50 @@ namespace WEB_AUTH_API.DataAccess
             try
             {
                 var placeholderData = new List<UserFeatures>
-                {
-                    new UserFeatures
-                    {
-                        UserId = 0,
-                        AttemptNumber = 1,
-                        DataId = 1,
-                        TimingInterval = 0.1f,
-                        KeyHoldDuration = 0.2f,
-                        DotReactionTime = 0.3f,
-                        ShapeReactionTime = 0.4f,
-                        ShapeAccuracy = 1.0f,
-                        MouseVelocity = 0.5f,
-                        BackspacePress = 1.0f,
-                        BackspaceInterval = 100.0f,
-                        DetectedLanguage = "en"
-                    },
-                    new UserFeatures
-                    {
-                        UserId = 0,
-                        AttemptNumber = 1,
-                        DataId = 2,
-                        TimingInterval = 0.12f,
-                        KeyHoldDuration = 0.22f,
-                        DotReactionTime = 0.32f,
-                        ShapeReactionTime = 0.42f,
-                        ShapeAccuracy = 0.0f,
-                        MouseVelocity = 0.6f,
-                        BackspacePress = 0.0f,
-                        BackspaceInterval = 0.0f,
-                        DetectedLanguage = "en"
-                    }
-                };
+        {
+            new UserFeatures
+            {
+                UserId = 0,
+                AttemptNumber = 1,
+                DataId = 1,
+                TimingInterval = 0.1f,
+                KeyHoldDuration = 0.2f,
+                KeydownTime = 1000f,
+                KeyupTime = 1200f,
+                DotReactionTime = 0.3f,
+                ShapeReactionTime = 0.4f,
+                ShapeAccuracy = 1.0f,
+                MouseVelocity = 0.5f,
+                BackspacePress = 1.0f,
+                BackspaceInterval = 100.0f,
+                DetectedLanguage = "en"
+            },
+            new UserFeatures
+            {
+                UserId = 0,
+                AttemptNumber = 1,
+                DataId = 2,
+                TimingInterval = 0.12f,
+                KeyHoldDuration = 0.22f,
+                KeydownTime = 1100f,
+                KeyupTime = 1320f,
+                DotReactionTime = 0.32f,
+                ShapeReactionTime = 0.42f,
+                ShapeAccuracy = 0.0f,
+                MouseVelocity = 0.6f,
+                BackspacePress = 0.0f,
+                BackspaceInterval = 0.0f,
+                DetectedLanguage = "en"
+            }
+        };
 
                 var dataView = context.Data.LoadFromEnumerable(placeholderData);
 
                 var pipeline = context.Transforms.Concatenate("Features",
                         nameof(UserFeatures.TimingInterval),
                         nameof(UserFeatures.KeyHoldDuration),
+                        nameof(UserFeatures.KeydownTime),
+                        nameof(UserFeatures.KeyupTime),
                         nameof(UserFeatures.DotReactionTime),
                         nameof(UserFeatures.ShapeReactionTime),
                         nameof(UserFeatures.ShapeAccuracy),
@@ -231,7 +243,7 @@ namespace WEB_AUTH_API.DataAccess
                     .Append(context.Transforms.NormalizeMeanVariance("Features"))
                     .Append(context.AnomalyDetection.Trainers.RandomizedPca(
                         featureColumnName: "Features",
-                        rank: 4
+                        rank: 5 // Adjusted to account for additional features
                     ));
 
                 var model = pipeline.Fit(dataView);
@@ -244,6 +256,7 @@ namespace WEB_AUTH_API.DataAccess
                 throw;
             }
         }
+
 
         public PcaAnomalyPrediction PredictAnomaly(MLContext context, UserFeatures inputData)
         {
@@ -284,6 +297,8 @@ namespace WEB_AUTH_API.DataAccess
                     .GroupBy(row => row.Field<int>("AttemptNumber"))
                     .Select(g => g.Select(row => new KeyHoldTime
                     {
+                        KeydownTime = row.Field<double>("KeydownTime"),
+                        KeyupTime = row.Field<double>("KeyupTime"),
                         Duration = row.Field<double>("Duration")
                     }).ToList())
                     .ToList();
@@ -328,7 +343,7 @@ namespace WEB_AUTH_API.DataAccess
 
                 var backspaceTimings = backspaceTimingData.AsEnumerable()
                     .GroupBy(row => row.Field<int>("AttemptNumber"))
-                    .Select(g => g.Select(row => new BackspaceTiming
+                    .Select(g => g.Select(row => new BackSpaceTiming
                     {
                         Time = row.Field<double>("Time"),
                         Action = row.Field<string>("Action")
@@ -350,7 +365,7 @@ namespace WEB_AUTH_API.DataAccess
                     DotTimings = dotTimings,
                     ShapeTimings = shapeTimings,
                     ShapeMouseMovements = mouseMovements,
-                    BackspaceTimings = backspaceTimings,
+                    BackSpaceTimings = backspaceTimings,
                     DetectedLanguages = detectedLanguages
                 };
             }
@@ -364,18 +379,26 @@ namespace WEB_AUTH_API.DataAccess
         private List<UserFeatures> ExtractFeaturesPerAttempt(UserBehaviorDataModel data)
         {
             var allFeatures = new List<UserFeatures>();
-            var random = new Random(); // For generating random values near the mean
+            var random = new Random();
 
-            // Determine the maximum number of data points across all feature types and attempts
-            int maxDataPoints = new int[]
-            {
-                data.Timings?.Max(t => t?.Count ?? 0) ?? 0,
-                data.KeyHoldTimes?.Max(k => k?.Count ?? 0) ?? 0,
-                data.DotTimings?.Max(d => d?.Count ?? 0) ?? 0,
-                data.ShapeTimings?.Max(s => s?.Count ?? 0) ?? 0,
-                data.ShapeMouseMovements?.Max(m => m?.Count ?? 0) ?? 0,
-                data.BackspaceTimings?.Max(b => b?.Count ?? 0) ?? 0
-            }.Max();
+            var counts = new List<int>();
+
+            if (data.Timings?.Any() == true)
+                counts.Add(data.Timings.Max(t => t?.Count ?? 0));
+            if (data.KeyHoldTimes?.Any() == true)
+                counts.Add(data.KeyHoldTimes.Max(k => k?.Count ?? 0));
+            if (data.DotTimings?.Any() == true)
+                counts.Add(data.DotTimings.Max(d => d?.Count ?? 0));
+            if (data.ShapeTimings?.Any() == true)
+                counts.Add(data.ShapeTimings.Max(s => s?.Count ?? 0));
+            if (data.ShapeMouseMovements?.Any() == true)
+                counts.Add(data.ShapeMouseMovements.Max(m => m?.Count ?? 0));
+            if (data.BackSpaceTimings?.Any() == true)
+                counts.Add(data.BackSpaceTimings.Max(b => b?.Count ?? 0));
+
+            int maxDataPoints = counts.Any() ? counts.Max() : 0;
+
+
 
             int numberOfAttempts = new int[]
             {
@@ -384,7 +407,7 @@ namespace WEB_AUTH_API.DataAccess
                 data.DotTimings?.Count ?? 0,
                 data.ShapeTimings?.Count ?? 0,
                 data.ShapeMouseMovements?.Count ?? 0,
-                data.BackspaceTimings?.Count ?? 0,
+                data.BackSpaceTimings?.Count ?? 0,
                 data.DetectedLanguages?.Count ?? 0
             }.Min();
 
@@ -397,11 +420,41 @@ namespace WEB_AUTH_API.DataAccess
             for (int attemptIndex = 0; attemptIndex < numberOfAttempts; attemptIndex++)
             {
                 var timings = PadList(data.Timings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
-                var keyHoldTimes = PadList(data.KeyHoldTimes?.ElementAtOrDefault(attemptIndex), maxDataPoints, new KeyHoldTime { Duration = 0.0 }, random);
+
+                var keyHoldTimes = PadList(
+                    data.KeyHoldTimes?.ElementAtOrDefault(attemptIndex),
+                    maxDataPoints,
+                    new KeyHoldTime
+                    {
+                        KeydownTime = 0.0,
+                        KeyupTime = 0.0,
+                        Duration = 0.0
+                    },
+                    random
+                );
+
                 var dotTimings = PadList(data.DotTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, 0.0, random);
-                var shapeTimings = PadList(data.ShapeTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, new ShapeTiming { ReactionTime = 0.0, IsCorrect = 0 }, random);
-                var mouseMovements = PadList(data.ShapeMouseMovements?.ElementAtOrDefault(attemptIndex), maxDataPoints, new MouseMovement { Velocity = 0.0 }, random);
-                var backspaceTimings = PadList(data.BackspaceTimings?.ElementAtOrDefault(attemptIndex), maxDataPoints, new BackspaceTiming { Time = 0.0 }, random);
+
+                var shapeTimings = PadList(
+                    data.ShapeTimings?.ElementAtOrDefault(attemptIndex),
+                    maxDataPoints,
+                    new ShapeTiming { ReactionTime = 0.0, IsCorrect = 0 },
+                    random
+                );
+
+                var mouseMovements = PadList(
+                    data.ShapeMouseMovements?.ElementAtOrDefault(attemptIndex),
+                    maxDataPoints,
+                    new MouseMovement { X = 0.0, Y = 0.0, Time = 0.0, Velocity = 0.0, Slope = 0.0 },
+                    random
+                );
+
+                var backSpaceTimings = PadList(
+                    data.BackSpaceTimings?.ElementAtOrDefault(attemptIndex),
+                    maxDataPoints,
+                    new BackSpaceTiming { Time = 0.0, Action = "" },
+                    random
+                );
 
                 for (int dataIndex = 0; dataIndex < maxDataPoints; dataIndex++)
                 {
@@ -412,13 +465,17 @@ namespace WEB_AUTH_API.DataAccess
                         DataId = dataIndex + 1,
                         TimingInterval = (float)timings[dataIndex],
                         KeyHoldDuration = (float)keyHoldTimes[dataIndex].Duration,
+                        KeydownTime = (float)keyHoldTimes[dataIndex].KeydownTime,
+                        KeyupTime = (float)keyHoldTimes[dataIndex].KeyupTime,
                         DotReactionTime = (float)dotTimings[dataIndex],
                         ShapeReactionTime = (float)shapeTimings[dataIndex].ReactionTime,
                         ShapeAccuracy = (float)shapeTimings[dataIndex].IsCorrect,
                         MouseVelocity = (float)mouseMovements[dataIndex].Velocity,
-                        BackspaceInterval = (float)backspaceTimings[dataIndex].Time,
-                        BackspacePress = backspaceTimings[dataIndex].Action != null ? 1.0f : 0.0f,
-                        DetectedLanguage = attemptIndex < data.DetectedLanguages?.Count ? data.DetectedLanguages[attemptIndex] : "unknown"
+                        BackspaceInterval = (float)backSpaceTimings[dataIndex].Time,
+                        BackspacePress = !string.IsNullOrEmpty(backSpaceTimings[dataIndex].Action) ? 1.0f : 0.0f,
+                        DetectedLanguage = attemptIndex < data.DetectedLanguages?.Count
+                                           ? data.DetectedLanguages[attemptIndex]
+                                           : "eng"
                     };
 
                     allFeatures.Add(features);
@@ -428,6 +485,7 @@ namespace WEB_AUTH_API.DataAccess
             _logger.LogInformation($"Extracted {allFeatures.Count} feature rows for UserId {data.UserId}");
             return allFeatures;
         }
+
 
         private List<T> PadList<T>(IEnumerable<T> source, int targetLength, T defaultValue, Random random)
         {
@@ -448,21 +506,35 @@ namespace WEB_AUTH_API.DataAccess
                 mean = sourceList.Cast<double>().Average();
                 while (paddedList.Count < targetLength)
                 {
-                    double variation = mean * 0.1; 
+                    double variation = mean * 0.1;
                     double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
                     paddedList.Add((T)(object)randomValue);
                 }
             }
             else if (typeof(T) == typeof(KeyHoldTime))
             {
-                mean = sourceList.Cast<KeyHoldTime>().Average(k => k.Duration);
+                var keyHoldList = sourceList.Cast<KeyHoldTime>().ToList();
+
+                double meanDuration = keyHoldList.Any() ? keyHoldList.Average(k => k.Duration) : 100.0;
+                double meanKeydown = keyHoldList.Any() ? keyHoldList.Average(k => k.KeydownTime) : 1000.0;
+
                 while (paddedList.Count < targetLength)
                 {
-                    double variation = mean * 0.1;
-                    double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
-                    paddedList.Add((T)(object)new KeyHoldTime { Duration = randomValue });
+                    double variationDuration = meanDuration * 0.1;
+                    double variationKeydown = meanKeydown * 0.1;
+
+                    double randomDuration = meanDuration + (random.NextDouble() * 2 - 1) * variationDuration;
+                    double randomKeydown = meanKeydown + (random.NextDouble() * 2 - 1) * variationKeydown;
+
+                    paddedList.Add((T)(object)new KeyHoldTime
+                    {
+                        KeydownTime = Math.Max(0, randomKeydown),
+                        Duration = Math.Max(0, randomDuration),
+                        KeyupTime = Math.Max(0, randomKeydown + randomDuration)
+                    });
                 }
             }
+
             else if (typeof(T) == typeof(ShapeTiming))
             {
                 mean = sourceList.Cast<ShapeTiming>().Average(s => s.ReactionTime);
@@ -471,7 +543,7 @@ namespace WEB_AUTH_API.DataAccess
                 {
                     double variation = mean * 0.1;
                     double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
-                    int randomAccuracy = random.NextDouble() < accuracyMean ? 1 : 0; 
+                    int randomAccuracy = random.NextDouble() < accuracyMean ? 1 : 0;
                     paddedList.Add((T)(object)new ShapeTiming { ReactionTime = randomValue, IsCorrect = randomAccuracy });
                 }
             }
@@ -485,16 +557,16 @@ namespace WEB_AUTH_API.DataAccess
                     paddedList.Add((T)(object)new MouseMovement { Velocity = randomValue });
                 }
             }
-            else if (typeof(T) == typeof(BackspaceTiming))
+            else if (typeof(T) == typeof(BackSpaceTiming))
             {
-                mean = sourceList.Cast<BackspaceTiming>().Average(b => b.Time);
-                double actionProbability = sourceList.Cast<BackspaceTiming>().Average(b => b.Action != null ? 1.0 : 0.0);
+                mean = sourceList.Cast<BackSpaceTiming>().Average(b => b.Time);
+                double actionProbability = sourceList.Cast<BackSpaceTiming>().Average(b => b.Action != null ? 1.0 : 0.0);
                 while (paddedList.Count < targetLength)
                 {
                     double variation = mean * 0.1;
                     double randomValue = mean + (random.NextDouble() * 2 - 1) * variation;
                     string randomAction = random.NextDouble() < actionProbability ? "Backspace" : null;
-                    paddedList.Add((T)(object)new BackspaceTiming { Time = randomValue, Action = randomAction });
+                    paddedList.Add((T)(object)new BackSpaceTiming { Time = randomValue, Action = randomAction });
                 }
             }
             else

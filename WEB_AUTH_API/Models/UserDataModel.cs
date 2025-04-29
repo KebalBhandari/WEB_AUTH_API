@@ -10,7 +10,7 @@ namespace WEB_AUTH_API.Models
 
         public List<List<KeyHoldTime>> KeyHoldTimes { get; set; } = new List<List<KeyHoldTime>>();
 
-        public List<List<BackspaceTiming>> BackspaceTimings { get; set; } = new List<List<BackspaceTiming>>();
+        public List<List<BackSpaceTiming>> BackSpaceTimings { get; set; } = new List<List<BackSpaceTiming>>();
 
         public List<List<double>> DotTimings { get; set; } = new List<List<double>>();
 
@@ -22,7 +22,7 @@ namespace WEB_AUTH_API.Models
 
     }
 
-    public class BackspaceTiming
+    public class BackSpaceTiming
     {
         public double Time { get; set; }
         public string Action { get; set; }

@@ -1,4 +1,5 @@
-﻿namespace WEB_AUTH_API.Models
+﻿
+namespace WEB_AUTH_API.Models
 {
     public class UserBehaviorDataModel
     {
@@ -14,13 +15,17 @@
 
         public List<List<MouseMovement>> ShapeMouseMovements { get; set; } = new List<List<MouseMovement>>();
 
-        public List<List<BackspaceTiming>> BackspaceTimings { get; set; } = new List<List<BackspaceTiming>>();
+        public List<List<BackSpaceTiming>> BackSpaceTimings { get; set; } = new List<List<BackSpaceTiming>>();
         public List<string> DetectedLanguages { get; set; } = new List<string>();
 
     }
 
     public class KeyHoldTime
     {
+        public double KeydownTime { get; set; }
+
+        public double KeyupTime { get; set; }
+
         public double Duration { get; set; }
     }
 
