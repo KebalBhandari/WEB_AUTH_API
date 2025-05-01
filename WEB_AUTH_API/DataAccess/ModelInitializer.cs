@@ -115,7 +115,7 @@ namespace WEB_AUTH_API.DataAccess
                     .Append(context.Transforms.NormalizeMeanVariance("Features"))
                     .Append(context.AnomalyDetection.Trainers.RandomizedPca(
                         featureColumnName: "Features",
-                        rank: 5 // Updated to reflect additional features
+                        rank: 8 // Updated to reflect additional features
                     ));
 
                 var model = pipeline.Fit(dataView);

@@ -277,7 +277,8 @@ namespace WEB_AUTH_API.Controllers
                 bool isAnomaly = prediction.IsAnomaly;
                 float score = prediction.Score;
                 const float MAX_POSSIBLE_SCORE = 10f;
-                float rawConfidence = 1f - (Math.Abs(score) / MAX_POSSIBLE_SCORE);
+                float safeScore = Math.Min(Math.Abs(score), MAX_POSSIBLE_SCORE);
+                float rawConfidence = 1f - (safeScore / MAX_POSSIBLE_SCORE);
                 float confidence = Math.Clamp(rawConfidence, 0f, 1f) * 100f;
 
                 _logger.LogInformation("Prediction completed for UserId={UserId}: IsAnomaly={IsAnomaly}, Score={Score}, Confidence={Confidence}%",
