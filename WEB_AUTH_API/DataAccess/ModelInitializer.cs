@@ -93,7 +93,7 @@ namespace WEB_AUTH_API.DataAccess
                 .Append(context.Transforms.NormalizeMeanVariance("Features"))
                 .Append(context.AnomalyDetection.Trainers.RandomizedPca(
                     featureColumnName: "Features",
-                    rank: 8  // adjust up to number of Features−1 as needed
+                    rank: 3  // adjust up to number of Features−1 as needed
                 ));
 
             // Fit and save

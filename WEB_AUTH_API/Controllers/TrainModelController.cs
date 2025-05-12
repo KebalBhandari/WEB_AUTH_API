@@ -298,10 +298,26 @@ namespace WEB_AUTH_API.Controllers
                 float avgScore = results.Average(r => r.Score);
                 bool isAnomaly = anomalyCount > 0;
 
+                // Calculate standard deviation and threshold
                 float stdDev = (float)Math.Sqrt(results.Average(r => Math.Pow(r.Score - avgScore, 2)));
                 float threshold = avgScore + stdDev;
-                float rawConf = (threshold - maxScore) / threshold;
-                float confidencePct = Math.Clamp(rawConf, 0f, 1f) * 100f;
+
+                // Confidence components
+                float anomalyRatio = (float)anomalyCount / totalAttempts;
+                float avgNormalizedScore = results.Average(r => Math.Clamp(1f - r.Score / threshold, 0f, 1f));
+
+                // Final confidence percentage
+                float confidencePct = 100f * ((1f - anomalyRatio) * 0.5f + avgNormalizedScore * 0.5f);
+
+                // Human-readable label
+                string confidenceLabel = confidencePct switch
+                {
+                    >= 90 => "Very Confident (Genuine)",
+                    >= 70 => "Confident",
+                    >= 40 => "Uncertain",
+                    >= 10 => "Likely Anomalous",
+                    _ => "Highly Suspicious"
+                };
 
                 _logger.LogInformation(
                     "User {UserId}: {AnomCount}/{Total} anomalous, maxScore={Max:F4}, avgScore={Avg:F4}",
@@ -325,6 +341,7 @@ namespace WEB_AUTH_API.Controllers
                     MaxAnomalyScore = maxScore,
                     AvgAnomalyScore = avgScore,
                     ConfidencePercentage = confidencePct,
+                    ConfidenceLabel = confidenceLabel,
                     UserId = userId,
                     Timestamp = DateTime.UtcNow
                 });
