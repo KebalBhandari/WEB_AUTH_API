@@ -7,46 +7,49 @@ namespace WEB_AUTH_API.DataAccess
         private double[] minValues;
         private double[] maxValues;
 
-        // Fit method: Calculate min and max for each feature
+        // =============================================================
+        // Function: Fit
+        // Computes min and max per feature column
+        // =============================================================
         public void Fit(List<double[]> features)
         {
-            int numFeatures = features[0].Length;
-            minValues = new double[numFeatures];
-            maxValues = new double[numFeatures];
+            int m = features[0].Length;
+            minValues = Enumerable.Repeat(double.MaxValue, m).ToArray();
+            maxValues = Enumerable.Repeat(double.MinValue, m).ToArray();
 
-            // Initialize min and max with extreme values
-            for (int i = 0; i < numFeatures; i++)
+            foreach (var row in features)
             {
-                minValues[i] = double.MaxValue;
-                maxValues[i] = double.MinValue;
-            }
-
-            foreach (var featureSet in features)
-            {
-                for (int i = 0; i < numFeatures; i++)
+                for (int i = 0; i < m; i++)
                 {
-                    if (featureSet[i] < minValues[i]) minValues[i] = featureSet[i];
-                    if (featureSet[i] > maxValues[i]) maxValues[i] = featureSet[i];
+                    if (row[i] < minValues[i]) minValues[i] = row[i];
+                    if (row[i] > maxValues[i]) maxValues[i] = row[i];
                 }
             }
         }
 
-        // Transform method: Apply min-max scaling
+        // =============================================================
+        // Function: Transform
+        // Applies min-max scaling to a list of feature arrays
+        // =============================================================
         public List<double[]> Transform(List<double[]> features)
         {
-            return features.Select(f => ScaleFeature(f)).ToList();
+            return features.Select(ScaleFeature).ToList();
         }
 
-        // Scale a single feature array
+        // =============================================================
+        // Function: ScaleFeature
+        // Scales a single feature array
+        // =============================================================
         public double[] ScaleFeature(double[] featureSet)
         {
-            double[] scaledFeatures = new double[featureSet.Length];
+            var scaled = new double[featureSet.Length];
             for (int i = 0; i < featureSet.Length; i++)
             {
-                scaledFeatures[i] = (featureSet[i] - minValues[i]) / (maxValues[i] - minValues[i]);
+                var range = maxValues[i] - minValues[i];
+                scaled[i] = range > 0 ? (featureSet[i] - minValues[i]) / range : 0.0;
             }
-            return scaledFeatures;
+            return scaled;
         }
-    }
 
+    }
 }

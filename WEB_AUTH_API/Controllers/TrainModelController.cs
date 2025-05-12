@@ -15,6 +15,7 @@ namespace WEB_AUTH_API.Controllers
         private readonly ModelInitializer _modelInitializer;
         private readonly MLContext _mlContext;
         private readonly ILogger<TrainModelController> _logger;
+        private readonly string _modelFolder = "TrainedModels";
 
         public TrainModelController(
             DataHandeler dataHandler,
@@ -31,53 +32,79 @@ namespace WEB_AUTH_API.Controllers
         [HttpPost("SaveData")]
         public async Task<IActionResult> SaveData([FromBody] UserDataModel userDataModel)
         {
+            // 1) Validate
+            if (userDataModel == null || string.IsNullOrEmpty(userDataModel.TokenNo))
+            {
+                _logger.LogWarning("Invalid user data: TokenNo={TokenNo}", userDataModel?.TokenNo);
+                return BadRequest(new
+                {
+                    Status = "ERROR",
+                    Message = "TokenNo is required.",
+                    Timestamp = DateTime.UtcNow
+                });
+            }
+
             try
             {
-                if (userDataModel == null || string.IsNullOrEmpty(userDataModel.TokenNo))
+                // 2) Persist raw data in parallel
+                var insertTasks = new List<Task>
                 {
-                    _logger.LogWarning("Invalid user data provided: TokenNo={TokenNo}", userDataModel?.TokenNo);
-                    return BadRequest(new
-                    {
-                        Status = "ERROR",
-                        Message = "Invalid user data provided. TokenNo is required.",
-                        Timestamp = DateTime.UtcNow
-                    });
-                }
+                    InsertTimingsAsync(userDataModel),
+                    InsertKeyHoldTimesAsync(userDataModel),
+                    InsertDotTimingsAsync(userDataModel),
+                    InsertShapeTimingsAsync(userDataModel),
+                    InsertMouseMovementsAsync(userDataModel),
+                    InsertBackspaceTimingsAsync(userDataModel),
+                    InsertDetectedLanguagesAsync(userDataModel)
+                };
+                await Task.WhenAll(insertTasks);
 
-                var tasks = new List<Task>();
+                _logger.LogInformation("Raw data saved for TokenNo={TokenNo}", userDataModel.TokenNo);
 
-                tasks.Add(InsertTimingsAsync(userDataModel));
-                tasks.Add(InsertKeyHoldTimesAsync(userDataModel));
-                tasks.Add(InsertDotTimingsAsync(userDataModel));
-                tasks.Add(InsertShapeTimingsAsync(userDataModel));
-                tasks.Add(InsertMouseMovementsAsync(userDataModel));
-                tasks.Add(InsertBackspaceTimingsAsync(userDataModel));
-                tasks.Add(InsertDetectedLanguagesAsync(userDataModel));
+                // 3) Resolve the numeric userId
+                var userIdStr = await GetUserIdByTokenAsync(userDataModel.TokenNo);
+                if (!int.TryParse(userIdStr, out var userId) || userId == 0)
+                    throw new InvalidOperationException($"No valid UserId for TokenNo={userDataModel.TokenNo}");
 
-                // Wait for all insert tasks to complete
-                await Task.WhenAll(tasks);
+                // 4) Gather all features for retraining
+                var positive = _modelInitializer.GetRawDataFromDb(userId);
 
-                _logger.LogInformation("Data saved successfully for TokenNo={TokenNo}", userDataModel.TokenNo);
-                return Ok(new { Status = "SUCCESS", Message = "Data Saved Successfully", Timestamp = DateTime.UtcNow });
+                // 5) Retrain (or train new) per-user model
+                _modelInitializer.TrainPcaAnomalyModel(
+                    _mlContext,
+                    userId,
+                    positive
+                );
+
+                _logger.LogInformation("Model retrained for User {UserId}", userId);
+
+                // 6) Return success
+                return Ok(new
+                {
+                    Status = "SUCCESS",
+                    Message = "Data saved and model retrained",
+                    UserId = userId,
+                    Timestamp = DateTime.UtcNow
+                });
             }
             catch (SqlException ex)
             {
-                _logger.LogError(ex, "Database error while saving data for TokenNo={TokenNo}", userDataModel?.TokenNo);
+                _logger.LogError(ex, "DB error saving data for TokenNo={TokenNo}", userDataModel.TokenNo);
                 return StatusCode(500, new
                 {
                     Status = "ERROR",
-                    Message = "A database error occurred while saving data.",
+                    Message = "Database error while saving data.",
                     Details = ex.Message,
                     Timestamp = DateTime.UtcNow
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An unexpected error occurred while saving data for TokenNo={TokenNo}", userDataModel?.TokenNo);
+                _logger.LogError(ex, "Error in SaveData for TokenNo={TokenNo}", userDataModel.TokenNo);
                 return StatusCode(500, new
                 {
                     Status = "ERROR",
-                    Message = "An unexpected error occurred while saving data.",
+                    Message = "Unexpected error during save or retrain.",
                     Details = ex.Message,
                     Timestamp = DateTime.UtcNow
                 });
@@ -236,102 +263,79 @@ namespace WEB_AUTH_API.Controllers
         {
             try
             {
-                // Validate input
+                // 1) Validate input
                 if (userData == null || string.IsNullOrEmpty(userData.TokenNo))
-                {
-                    _logger.LogWarning("Invalid user data provided: TokenNo={TokenNo}", userData?.TokenNo);
-                    return BadRequest(new
-                    {
-                        Status = "ERROR",
-                        Message = "Invalid user data provided. TokenNo is required.",
-                        Timestamp = DateTime.UtcNow
-                    });
-                }
+                    return BadRequest(new { Status = "ERROR", Message = "TokenNo is required." });
 
-                // Get UserId from TokenNo using stored procedure
-                int userId = Int32.Parse(await GetUserIdByTokenAsync(userData.TokenNo));
+                // 2) Resolve UserId
+                var userIdStr = await GetUserIdByTokenAsync(userData.TokenNo);
+                if (!int.TryParse(userIdStr, out var userId) || userId == 0)
+                    return BadRequest(new { Status = "ERROR", Message = "Invalid TokenNo." });
 
-                if (userId == 0)
-                {
-                    _logger.LogWarning("No UserId found for TokenNo={TokenNo}", userData.TokenNo);
-                    return BadRequest(new
-                    {
-                        Status = "ERROR",
-                        Message = "No UserId found for the provided TokenNo.",
-                        Timestamp = DateTime.UtcNow
-                    });
-                }
+                // 3) Map & extract ALL features
+                var userBehavior = MapToUserBehaviorDataModel(userData, userId);
+                var featuresList = ExtractFeaturesPerAttempt(userBehavior);
+                if (!featuresList.Any())
+                    return BadRequest(new { Status = "ERROR", Message = "No features extracted." });
 
-                // Map UserDataModel to UserBehaviorDataModel
-                var userBehaviorData = MapToUserBehaviorDataModel(userData, userId);
+                // 4) Load the PCA model for this user
+                var modelPath = Path.Combine(_modelFolder, $"model_user_{userId}.zip");
+                if (!System.IO.File.Exists(modelPath))
+                    return StatusCode(503, new { Status = "ERROR", Message = $"Model for user {userId} not found." });
+                var model = _mlContext.Model.Load(modelPath, out _);
 
-                _logger.LogInformation("Starting prediction for UserId={UserId}", userId);
+                // 5) Score every attempt at once
+                var dataView = _mlContext.Data.LoadFromEnumerable(featuresList);
+                var predictions = model.Transform(dataView);
+                var results = _mlContext.Data
+                    .CreateEnumerable<PcaAnomalyPrediction>(predictions, reuseRowObject: false)
+                    .ToList();
 
-                List<UserFeatures> inputFeatures = ExtractFeaturesPerAttempt(userBehaviorData);
-                string modelPath = "behavior_model.zip";
-                ITransformer model = _mlContext.Model.Load(modelPath, out var schema);
-                var predictionEngine = _mlContext.Model.CreatePredictionEngine<UserFeatures, PcaAnomalyPrediction>(model, inputSchema: schema);
-                UserFeatures latestFeatures = inputFeatures.LastOrDefault() ?? throw new InvalidOperationException("No valid features extracted from input data.");
-                var prediction = predictionEngine.Predict(latestFeatures);
+                // 6) Aggregate the anomaly flags and scores
+                int totalAttempts = results.Count;
+                int anomalyCount = results.Count(r => r.IsAnomaly);
+                float maxScore = results.Max(r => r.Score);
+                float avgScore = results.Average(r => r.Score);
+                bool isAnomaly = anomalyCount > 0;
 
-                bool isAnomaly = prediction.IsAnomaly;
-                float score = prediction.Score;
-                const float MAX_POSSIBLE_SCORE = 10f;
-                float safeScore = Math.Min(Math.Abs(score), MAX_POSSIBLE_SCORE);
-                float rawConfidence = 1f - (safeScore / MAX_POSSIBLE_SCORE);
-                float confidence = Math.Clamp(rawConfidence, 0f, 1f) * 100f;
+                float stdDev = (float)Math.Sqrt(results.Average(r => Math.Pow(r.Score - avgScore, 2)));
+                float threshold = avgScore + stdDev;
+                float rawConf = (threshold - maxScore) / threshold;
+                float confidencePct = Math.Clamp(rawConf, 0f, 1f) * 100f;
 
-                _logger.LogInformation("Prediction completed for UserId={UserId}: IsAnomaly={IsAnomaly}, Score={Score}, Confidence={Confidence}%",
-                    userId, isAnomaly, score, confidence);
+                _logger.LogInformation(
+                    "User {UserId}: {AnomCount}/{Total} anomalous, maxScore={Max:F4}, avgScore={Avg:F4}",
+                    userId, anomalyCount, totalAttempts, maxScore, avgScore);
 
-                await SavePredictionResultAsync(userData.TokenNo, isAnomaly, score, confidence, "v1.0");
+                await SavePredictionResultAsync(
+                    userData.TokenNo,
+                    isAnomaly,
+                    maxScore,
+                    confidencePct,  
+                    "v1.0"
+                );
 
-                var response = new
+                // 8) Return detailed response
+                return Ok(new
                 {
                     Status = "SUCCESS",
                     IsAnomaly = isAnomaly,
-                    AnomalyScore = score,
-                    ConfidencePercentage = confidence,
+                    TotalAttempts = totalAttempts,
+                    AnomalousAttempts = anomalyCount,
+                    MaxAnomalyScore = maxScore,
+                    AvgAnomalyScore = avgScore,
+                    ConfidencePercentage = confidencePct,
                     UserId = userId,
-                    Timestamp = DateTime.UtcNow
-                };
-
-                return Ok(response);
-            }
-            catch (FileNotFoundException ex)
-            {
-                _logger.LogError(ex, "Model file 'behavior_model.zip' not found for TokenNo={TokenNo}. Ensure the model is trained and available.", userData?.TokenNo);
-                return StatusCode(503, new
-                {
-                    Status = "ERROR",
-                    Message = "Model file not found. Please ensure the model is trained and saved as 'behavior_model.zip'.",
-                    Details = ex.Message,
-                    Timestamp = DateTime.UtcNow
-                });
-            }
-            catch (InvalidOperationException ex)
-            {
-                _logger.LogError(ex, "Invalid operation during prediction for TokenNo={TokenNo}.", userData?.TokenNo);
-                return StatusCode(500, new
-                {
-                    Status = "ERROR",
-                    Message = "An error occurred during prediction. Invalid operation.",
-                    Details = ex.Message,
                     Timestamp = DateTime.UtcNow
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An unexpected error occurred during prediction for TokenNo={TokenNo}.", userData?.TokenNo);
-                return StatusCode(500, new
-                {
-                    Status = "ERROR",
-                    Message = "An unexpected error occurred during prediction.",
-                    Details = ex.Message,
-                    Timestamp = DateTime.UtcNow
-                });
+                _logger.LogError(ex, "Error during Predict for TokenNo={TokenNo}", userData?.TokenNo);
+                return StatusCode(500, new { Status = "ERROR", Message = "Prediction error.", Details = ex.Message });
             }
         }
+
 
         private async Task<string> GetUserIdByTokenAsync(string tokenNo)
         {

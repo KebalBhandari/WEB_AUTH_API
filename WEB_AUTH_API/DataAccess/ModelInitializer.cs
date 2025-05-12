@@ -8,34 +8,32 @@ namespace WEB_AUTH_API.DataAccess
     public class ModelInitializer
     {
         private readonly DataHandeler _dataHandler;
-        private readonly string _modelPath = "behavior_model.zip";
+        private readonly string _modelFolder = "TrainedModels";
         private readonly ILogger<ModelInitializer> _logger;
 
         public ModelInitializer(DataHandeler dataHandler, ILogger<ModelInitializer> logger)
         {
             _dataHandler = dataHandler;
             _logger = logger;
+            Directory.CreateDirectory(_modelFolder);
         }
 
         public void InitializeModel()
         {
-            var context = new MLContext();
+            var context = new MLContext(seed: 42);
+            var userIds = GetAllUserIds();
 
-            if (File.Exists(_modelPath))
+            foreach (var userId in userIds)
             {
-                _logger.LogInformation("Trained model found. Skipping model training...");
-                return;
-            }
+                var modelPath = Path.Combine(_modelFolder, $"model_user_{userId}.zip");
+                if (File.Exists(modelPath))
+                {
+                    _logger.LogInformation($"Model for User {userId} already exists. Skipping training.");
+                    continue;
+                }
 
-            if (IsDataAvailable())
-            {
-                _logger.LogInformation("Data found in the database. Training model using database data...");
-                TrainModelUsingDatabase(context);
-            }
-            else
-            {
-                _logger.LogInformation("No data found in the database. Creating baseline model...");
-                CreateBaselineModel(context);
+                var positive = GetRawDataFromDb(userId);
+                TrainPcaAnomalyModel(context, userId, positive);
             }
         }
 
@@ -55,227 +53,59 @@ namespace WEB_AUTH_API.DataAccess
             }
         }
 
-        private void TrainModelUsingDatabase(MLContext context)
+        private List<int> GetAllUserIds()
         {
-            try
-            {
-                var trainingData = new List<UserFeatures>();
-                string sqlQuery = "SELECT DISTINCT UserId FROM Timings";
-                DataTable userIdsTable = _dataHandler.ReadData(sqlQuery, null, CommandType.Text);
-
-                foreach (DataRow row in userIdsTable.Rows)
-                {
-                    int userId = Convert.ToInt32(row["UserId"]);
-                    var userRawData = GetRawDataFromDb(userId);
-                    trainingData.AddRange(userRawData);
-                }
-
-                if (!trainingData.Any())
-                {
-                    _logger.LogWarning("No training data found.");
-                    return;
-                }
-
-                // Enhanced filtering of invalid data (include KeydownTime, KeyupTime)
-                trainingData = trainingData.Where(f =>
-                    !float.IsNaN(f.TimingInterval) && !float.IsInfinity(f.TimingInterval) &&
-                    !float.IsNaN(f.KeyHoldDuration) && !float.IsInfinity(f.KeyHoldDuration) &&
-                    !float.IsNaN(f.KeydownTime) && !float.IsInfinity(f.KeydownTime) &&
-                    !float.IsNaN(f.KeyupTime) && !float.IsInfinity(f.KeyupTime) &&
-                    !float.IsNaN(f.DotReactionTime) && !float.IsInfinity(f.DotReactionTime) &&
-                    !float.IsNaN(f.ShapeReactionTime) && !float.IsInfinity(f.ShapeReactionTime) &&
-                    !float.IsNaN(f.ShapeAccuracy) && !float.IsInfinity(f.ShapeAccuracy) &&
-                    !float.IsNaN(f.MouseVelocity) && !float.IsInfinity(f.MouseVelocity) &&
-                    !float.IsNaN(f.BackspacePress) && !float.IsInfinity(f.BackspacePress) &&
-                    !float.IsNaN(f.BackspaceInterval) && !float.IsInfinity(f.BackspaceInterval)
-                ).ToList();
-
-                if (!trainingData.Any())
-                {
-                    _logger.LogWarning("No valid training data after filtering NaN/Infinity values.");
-                    return;
-                }
-
-                _logger.LogInformation($"Training with {trainingData.Count} data points.");
-
-                var dataView = context.Data.LoadFromEnumerable(trainingData);
-
-                var pipeline = context.Transforms.Concatenate("Features",
-                        nameof(UserFeatures.TimingInterval),
-                        nameof(UserFeatures.KeyHoldDuration),
-                        nameof(UserFeatures.KeydownTime),    // newly added
-                        nameof(UserFeatures.KeyupTime),      // newly added
-                        nameof(UserFeatures.DotReactionTime),
-                        nameof(UserFeatures.ShapeReactionTime),
-                        nameof(UserFeatures.ShapeAccuracy),
-                        nameof(UserFeatures.MouseVelocity),
-                        nameof(UserFeatures.BackspacePress),
-                        nameof(UserFeatures.BackspaceInterval))
-                    .Append(context.Transforms.ReplaceMissingValues("Features"))
-                    .Append(context.Transforms.NormalizeMeanVariance("Features"))
-                    .Append(context.AnomalyDetection.Trainers.RandomizedPca(
-                        featureColumnName: "Features",
-                        rank: 8 // Updated to reflect additional features
-                    ));
-
-                var model = pipeline.Fit(dataView);
-                context.Model.Save(model, dataView.Schema, _modelPath);
-                _logger.LogInformation("Model trained and saved successfully.");
-
-                EvaluateModel(context, dataView, model);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"Error during model training: {ex.Message}");
-                throw;
-            }
+            string sql = "SELECT DISTINCT UserId FROM Timings";
+            var table = _dataHandler.ReadData(sql, null, CommandType.Text);
+            return table.AsEnumerable()
+                        .Select(r => r.Field<int>("UserId"))
+                        .ToList();
         }
 
-
-        private void EvaluateModel(MLContext context, IDataView testData, ITransformer model)
+        public void TrainPcaAnomalyModel(MLContext context,
+                                         int userId,
+                                         List<UserFeatures> positiveSamples)
         {
-            try
+            if (!positiveSamples.Any())
             {
-                // Transform the test data to get predictions
-                var predictions = model.Transform(testData);
-
-                // Convert predictions to an enumerable for analysis
-                var predictionResults = context.Data.CreateEnumerable<PcaAnomalyPrediction>(
-                    predictions, reuseRowObject: false);
-
-                // Analyze predictions
-                int totalCount = 0;
-                int anomalyCount = 0;
-                double totalScore = 0;
-                var scores = new List<float>();
-
-                foreach (var prediction in predictionResults)
-                {
-                    totalCount++;
-                    totalScore += prediction.Score;
-                    scores.Add(prediction.Score);
-                    if (prediction.IsAnomaly)
-                    {
-                        anomalyCount++;
-                    }
-                }
-
-                if (totalCount == 0)
-                {
-                    _logger.LogWarning("No predictions generated for evaluation.");
-                    return;
-                }
-
-                // Calculate basic statistics
-                double averageScore = totalScore / totalCount;
-                double anomalyRate = (double)anomalyCount / totalCount;
-                double scoreStdDev = scores.Any() ? Math.Sqrt(scores.Average(s => Math.Pow(s - averageScore, 2))) : 0;
-
-                _logger.LogInformation("Model evaluation results (unsupervised):");
-                _logger.LogInformation($"  Total data points: {totalCount}");
-                _logger.LogInformation($"  Anomalies detected: {anomalyCount}");
-                _logger.LogInformation($"  Anomaly rate: {anomalyRate:P2}"); // Percentage format
-                _logger.LogInformation($"  Average anomaly score: {averageScore:F4}");
-                _logger.LogInformation($"  Score standard deviation: {scoreStdDev:F4}");
+                _logger.LogWarning($"No data for User {userId}; skipping.");
+                return;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError($"Error during model evaluation: {ex.Message}");
-            }
+
+            _logger.LogInformation(
+                "Training UNSUPERVISED IsolationForest for User {UserId} on {Count} samples",
+                userId, positiveSamples.Count);
+
+            var dataView = context.Data.LoadFromEnumerable(positiveSamples);
+
+            var pipeline = context.Transforms
+                .Concatenate("Features",
+                    nameof(UserFeatures.TimingInterval),
+                    nameof(UserFeatures.KeyHoldDuration),
+                    nameof(UserFeatures.KeydownTime),
+                    nameof(UserFeatures.KeyupTime),
+                    nameof(UserFeatures.DotReactionTime),
+                    nameof(UserFeatures.ShapeReactionTime),
+                    nameof(UserFeatures.ShapeAccuracy),
+                    nameof(UserFeatures.MouseVelocity),
+                    nameof(UserFeatures.BackspacePress),
+                    nameof(UserFeatures.BackspaceInterval))
+                .Append(context.Transforms.NormalizeMeanVariance("Features"))
+                .Append(context.AnomalyDetection.Trainers.RandomizedPca(
+                    featureColumnName: "Features",
+                    rank: 8  // adjust up to number of Features−1 as needed
+                ));
+
+            // Fit and save
+            var model = pipeline.Fit(dataView);
+            SaveModel(userId, context, model, dataView.Schema);
         }
 
-        private void CreateBaselineModel(MLContext context)
+        private void SaveModel(int userId, MLContext context, ITransformer model, DataViewSchema schema)
         {
-            try
-            {
-                var placeholderData = new List<UserFeatures>
-        {
-            new UserFeatures
-            {
-                UserId = 0,
-                AttemptNumber = 1,
-                DataId = 1,
-                TimingInterval = 0.1f,
-                KeyHoldDuration = 0.2f,
-                KeydownTime = 1000f,
-                KeyupTime = 1200f,
-                DotReactionTime = 0.3f,
-                ShapeReactionTime = 0.4f,
-                ShapeAccuracy = 1.0f,
-                MouseVelocity = 0.5f,
-                BackspacePress = 1.0f,
-                BackspaceInterval = 100.0f,
-                DetectedLanguage = "en"
-            },
-            new UserFeatures
-            {
-                UserId = 0,
-                AttemptNumber = 1,
-                DataId = 2,
-                TimingInterval = 0.12f,
-                KeyHoldDuration = 0.22f,
-                KeydownTime = 1100f,
-                KeyupTime = 1320f,
-                DotReactionTime = 0.32f,
-                ShapeReactionTime = 0.42f,
-                ShapeAccuracy = 0.0f,
-                MouseVelocity = 0.6f,
-                BackspacePress = 0.0f,
-                BackspaceInterval = 0.0f,
-                DetectedLanguage = "en"
-            }
-        };
-
-                var dataView = context.Data.LoadFromEnumerable(placeholderData);
-
-                var pipeline = context.Transforms.Concatenate("Features",
-                        nameof(UserFeatures.TimingInterval),
-                        nameof(UserFeatures.KeyHoldDuration),
-                        nameof(UserFeatures.KeydownTime),
-                        nameof(UserFeatures.KeyupTime),
-                        nameof(UserFeatures.DotReactionTime),
-                        nameof(UserFeatures.ShapeReactionTime),
-                        nameof(UserFeatures.ShapeAccuracy),
-                        nameof(UserFeatures.MouseVelocity),
-                        nameof(UserFeatures.BackspacePress),
-                        nameof(UserFeatures.BackspaceInterval))
-                    .Append(context.Transforms.ReplaceMissingValues("Features"))
-                    .Append(context.Transforms.NormalizeMeanVariance("Features"))
-                    .Append(context.AnomalyDetection.Trainers.RandomizedPca(
-                        featureColumnName: "Features",
-                        rank: 5 // Adjusted to account for additional features
-                    ));
-
-                var model = pipeline.Fit(dataView);
-                context.Model.Save(model, dataView.Schema, _modelPath);
-                _logger.LogInformation("Baseline model created and saved successfully.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"Error creating baseline model: {ex.Message}");
-                throw;
-            }
-        }
-
-
-        public PcaAnomalyPrediction PredictAnomaly(MLContext context, UserFeatures inputData)
-        {
-            try
-            {
-                if (!File.Exists(_modelPath))
-                {
-                    throw new FileNotFoundException("Trained model not found. Please train the model first.");
-                }
-
-                ITransformer model = context.Model.Load(_modelPath, out var schema);
-                var predictionEngine = context.Model.CreatePredictionEngine<UserFeatures, PcaAnomalyPrediction>(model);
-                return predictionEngine.Predict(inputData);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"Error during prediction: {ex.Message}");
-                throw;
-            }
+            var modelPath = Path.Combine(_modelFolder, $"model_user_{userId}.zip");
+            context.Model.Save(model, schema, modelPath);
+            _logger.LogInformation($"Unsupervised model saved: {modelPath}");
         }
 
         public UserBehaviorDataModel GetDataFromDb(int userId)
@@ -577,7 +407,7 @@ namespace WEB_AUTH_API.DataAccess
             return paddedList.Take(targetLength).ToList();
         }
 
-        private List<UserFeatures> GetRawDataFromDb(int userId)
+        public List<UserFeatures> GetRawDataFromDb(int userId)
         {
             try
             {
